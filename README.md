@@ -1,6 +1,66 @@
-# Padelyzer Backend
+# Padelyzer
 
-Backend para la aplicación Padelyzer, un sistema de análisis de videos de pádel que utiliza inteligencia artificial para detectar y analizar golpes.
+A comprehensive padel analytics platform that helps players improve their game through video analysis and AI-powered insights.
+
+## Setup
+
+1. Clone the repository:
+```bash
+git clone https://github.com/sjamesmx/padelyzer.git
+cd padelyzer
+```
+
+2. Create and activate a virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+4. Set up Firebase credentials:
+   - Copy `firebase-credentials.template.json` to `firebase-credentials.json`
+   - Replace the placeholder values with your actual Firebase credentials
+   - Never commit `firebase-credentials.json` to version control
+
+5. Run the application:
+```bash
+python run.py
+```
+
+## Environment Variables
+
+Create a `.env` file in the root directory with the following variables:
+```
+FIREBASE_CREDENTIALS_PATH=path/to/firebase-credentials.json
+```
+
+## Development
+
+- Run tests: `pytest`
+- Format code: `black .`
+- Type checking: `pyright`
+
+## Security
+
+- Never commit sensitive credentials or API keys
+- Use environment variables for configuration
+- Follow the principle of least privilege when setting up service accounts
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a Pull Request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Características
 
