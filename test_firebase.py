@@ -2,6 +2,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import os
 import logging
+from dotenv import load_dotenv
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -9,8 +10,14 @@ logger = logging.getLogger(__name__)
 
 def test_firebase_connection():
     try:
-        # Configurar las credenciales
-        cred_path = "firebase-service-account.json"
+        # Load environment variables
+        load_dotenv()
+        
+        # Get credentials path from environment variable
+        cred_path = os.getenv('FIREBASE_CREDENTIALS_PATH')
+        if not cred_path:
+            raise ValueError("FIREBASE_CREDENTIALS_PATH environment variable is not set")
+            
         logger.info(f"Usando credenciales desde: {cred_path}")
         
         cred = credentials.Certificate(cred_path)
