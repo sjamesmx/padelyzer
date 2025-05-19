@@ -7,6 +7,8 @@ from app.core.config import settings
 import logging
 from typing import Optional, Any, Dict
 from datetime import datetime
+from google.cloud import firestore as cloud_firestore
+from dotenv import load_dotenv
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -40,143 +42,74 @@ def validate_credentials(cred_dict: Dict[str, Any]) -> bool:
             if field not in cred_dict:
                 logger.error(f"Campo requerido faltante: {field}")
                 return False
-                
-            if isinstance(expected_type, type):
-                if not isinstance(cred_dict[field], expected_type):
-                    logger.error(f"Tipo incorrecto para {field}: esperado {expected_type}, recibido {type(cred_dict[field])}")
-                    return False
-            elif cred_dict[field] != expected_type:
-                logger.error(f"Valor incorrecto para {field}: esperado {expected_type}, recibido {cred_dict[field]}")
+            if isinstance(expected_type, type) and not isinstance(cred_dict[field], expected_type):
+                logger.error(f"Tipo incorrecto para {field}: esperado {expected_type}, obtenido {type(cred_dict[field])}")
                 return False
-                
-        # Validar formato de private_key
-        private_key = cred_dict.get('private_key', '')
-        
-        # Normalizar la clave privada
-        private_key = private_key.replace('\\n', '\n').strip()
-        
-        # Verificar que la clave comience y termine correctamente
-        if not any(private_key.startswith(prefix) for prefix in ['-----BEGIN PRIVATE KEY-----', '-----BEGIN RSA PRIVATE KEY-----']):
-            logger.error("Formato incorrecto de private_key: debe comenzar con '-----BEGIN PRIVATE KEY-----' o '-----BEGIN RSA PRIVATE KEY-----'")
-            return False
-            
-        if not any(private_key.endswith(suffix) for suffix in ['-----END PRIVATE KEY-----', '-----END RSA PRIVATE KEY-----']):
-            logger.error("Formato incorrecto de private_key: debe terminar con '-----END PRIVATE KEY-----' o '-----END RSA PRIVATE KEY-----'")
-            return False
-            
-        # Verificar que la clave tenga el formato correcto
-        key_lines = private_key.split('\n')
-        if len(key_lines) < 3:
-            logger.error("Formato incorrecto de private_key: debe tener al menos 3 líneas")
-            return False
-            
-        # Verificar que la clave base64 sea válida
-        try:
-            import base64
-            key_content = ''.join(key_lines[1:-1])
-            base64.b64decode(key_content)
-        except Exception as e:
-            logger.error(f"Formato incorrecto de private_key: contenido base64 inválido - {str(e)}")
-            return False
-            
-        logger.info("✅ Formato de private_key válido")
+            if isinstance(expected_type, str) and cred_dict[field] != expected_type:
+                logger.error(f"Valor incorrecto para {field}: esperado {expected_type}, obtenido {cred_dict[field]}")
+                return False
         return True
     except Exception as e:
         logger.error(f"Error al validar credenciales: {str(e)}")
         return False
 
-def initialize_firebase(max_retries: int = 3, retry_delay: int = 2) -> Optional[firebase_admin.App]:
+def initialize_firebase():
     """
-    Inicializa Firebase con las credenciales apropiadas.
-    
-    Args:
-        max_retries: Número máximo de intentos de inicialización
-        retry_delay: Tiempo de espera entre intentos en segundos
+    Inicializa la conexión con Firebase usando variables de entorno.
+    """
+    try:
+        # Cargar variables de entorno
+        if "PYTEST_CURRENT_TEST" in os.environ:
+            load_dotenv(".env.test")
+        else:
+            load_dotenv()
         
-    Returns:
-        Optional[firebase_admin.App]: La instancia de la aplicación de Firebase o None si hay un error.
-    """
-    for attempt in range(max_retries):
-        try:
-            # Limpiar cualquier instancia existente
-            for app in firebase_admin._apps.values():
-                try:
-                    firebase_admin.delete_app(app)
-                except Exception as e:
-                    logger.warning(f"Error al eliminar app existente: {str(e)}")
+        # Verificar que todas las variables necesarias estén presentes
+        required_vars = [
+            'FIREBASE_PROJECT_ID',
+            'FIREBASE_PRIVATE_KEY_ID',
+            'FIREBASE_PRIVATE_KEY',
+            'FIREBASE_CLIENT_EMAIL',
+            'FIREBASE_CLIENT_ID',
+            'FIREBASE_CLIENT_CERT_URL'
+        ]
+        
+        missing_vars = [var for var in required_vars if not os.getenv(var)]
+        if missing_vars:
+            raise ValueError(f"Faltan variables de entorno: {', '.join(missing_vars)}")
+        
+        # Crear diccionario de credenciales
+        cred_dict = {
+            "type": "service_account",
+            "project_id": os.getenv('FIREBASE_PROJECT_ID'),
+            "private_key_id": os.getenv('FIREBASE_PRIVATE_KEY_ID'),
+            "private_key": os.getenv('FIREBASE_PRIVATE_KEY').replace('\\n', '\n'),
+            "client_email": os.getenv('FIREBASE_CLIENT_EMAIL'),
+            "client_id": os.getenv('FIREBASE_CLIENT_ID'),
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": os.getenv('FIREBASE_CLIENT_CERT_URL')
+        }
+        
+        # Validar credenciales
+        if not validate_credentials(cred_dict):
+            raise ValueError("Credenciales de Firebase inválidas")
+        
+        # Inicializar Firebase solo si no está inicializado
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(cred_dict)
+            app = initialize_app(cred)
+            logger.info("Firebase inicializado correctamente")
+        
+        return firestore.client()
+        
+    except Exception as e:
+        logger.error(f"Error al inicializar Firebase: {str(e)}")
+        raise
 
-            # Intentar primero con credenciales directas
-            try:
-                cred_dict = {
-                    "type": "service_account",
-                    "project_id": "pdzr-458820",
-                    "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
-                    "private_key": os.getenv("FIREBASE_PRIVATE_KEY", "").replace("\\n", "\n"),
-                    "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
-                    "client_id": os.getenv("FIREBASE_CLIENT_ID"),
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                    "client_x509_cert_url": os.getenv("FIREBASE_CLIENT_CERT_URL")
-                }
-                
-                # Verificar que todas las variables de entorno necesarias estén presentes
-                required_vars = ["FIREBASE_PRIVATE_KEY_ID", "FIREBASE_PRIVATE_KEY", 
-                               "FIREBASE_CLIENT_EMAIL", "FIREBASE_CLIENT_ID", 
-                               "FIREBASE_CLIENT_CERT_URL"]
-                
-                missing_vars = [var for var in required_vars if not os.getenv(var)]
-                
-                if not missing_vars and validate_credentials(cred_dict):
-                    logger.info("Inicializando Firebase con credenciales de variables de entorno")
-                    cred = credentials.Certificate(cred_dict)
-                    app = initialize_app(cred, {
-                        'storageBucket': settings.FIREBASE_STORAGE_BUCKET,
-                        'databaseURL': settings.FIREBASE_DATABASE_URL
-                    })
-                    logger.info("Firebase inicializado correctamente con credenciales de variables de entorno")
-                    return app
-                else:
-                    if missing_vars:
-                        logger.warning(f"Faltan variables de entorno: {', '.join(missing_vars)}")
-                    raise ValueError("Credenciales de variables de entorno inválidas")
-                    
-            except Exception as env_error:
-                logger.warning(f"Error al usar credenciales de variables de entorno: {str(env_error)}")
-                
-                # Si falla, intentar con el archivo de credenciales
-                cred_path = "/Users/dev4/pdzr/backend/config/firebase-credentials.json"
-                logger.info(f"Intentando inicializar Firebase con credenciales desde archivo: {cred_path}")
-                
-                if not os.path.exists(cred_path):
-                    logger.error(f"FIREBASE_CRED_PATH no existe: {cred_path}")
-                    raise ValueError(f"FIREBASE_CRED_PATH no existe: {cred_path}")
-                    
-                # Validar el archivo de credenciales
-                try:
-                    with open(cred_path, 'r') as f:
-                        cred_dict = json.load(f)
-                    if not validate_credentials(cred_dict):
-                        raise ValueError("Credenciales del archivo inválidas")
-                except Exception as e:
-                    logger.error(f"Error al validar archivo de credenciales: {str(e)}")
-                    raise
-                    
-                cred = credentials.Certificate(cred_path)
-                app = initialize_app(cred, {
-                    'storageBucket': settings.FIREBASE_STORAGE_BUCKET,
-                    'databaseURL': settings.FIREBASE_DATABASE_URL
-                })
-                logger.info("Firebase inicializado correctamente con credenciales de archivo")
-                return app
-                
-        except Exception as e:
-            logger.error(f"Error al inicializar Firebase (intento {attempt + 1}/{max_retries}): {str(e)}")
-            if attempt < max_retries - 1:
-                logger.info(f"Reintentando en {retry_delay} segundos...")
-                time.sleep(retry_delay)
-            else:
-                raise
+# Inicializar
+db = initialize_firebase()
 
 def get_firebase_client() -> Any:
     """

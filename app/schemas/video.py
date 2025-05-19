@@ -1,11 +1,11 @@
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, validator
 from typing import Optional, Literal, Dict, Any, List
 from datetime import datetime
 from enum import Enum
 
 class VideoType(str, Enum):
-    ENTRENAMIENTO = "entrenamiento"
-    JUEGO = "juego"
+    TRAINING = "training"
+    GAME = "game"
     TORNEO = "torneo"
 
 class VideoStatus(str, Enum):
@@ -38,19 +38,30 @@ class VideoResponse(VideoInDB):
     pass
 
 class VideoAnalysisRequest(BaseModel):
-    user_id: str
-    video_url: HttpUrl
-    tipo_video: VideoType
-    player_position: Dict[str, Any]
+    video_id: str
+    analysis_type: str = Field(..., pattern='^(training|game)$')
+    options: Optional[dict] = Field(default_factory=dict)
 
 class VideoAnalysisResponse(BaseModel):
-    analysis_id: str
-    status: VideoStatus
-    message: str
+    id: str
+    video_id: str
+    status: str
+    created_at: datetime
+    updated_at: Optional[datetime]
+    results: Optional[dict]
+    error: Optional[str]
 
 class VideoUpload(BaseModel):
-    tipo_video: VideoType
-    descripcion: Optional[str] = None
+    title: str = Field(..., min_length=3, max_length=100)
+    description: Optional[str] = Field(None, max_length=500)
+    video_type: VideoType
+    is_public: bool = False
+    
+    @validator('title')
+    def title_not_empty(cls, v):
+        if not v.strip():
+            raise ValueError('El título no puede estar vacío')
+        return v
 
 class VideoAnalysis(BaseModel):
     id: str
@@ -62,4 +73,10 @@ class VideoAnalysis(BaseModel):
     resultados: Optional[dict] = None
     preview_frames: Optional[List[str]] = None
     blueprint: str
-    error: Optional[str] = None 
+    error: Optional[str] = None
+
+class VideoListResponse(BaseModel):
+    videos: List[VideoResponse]
+    total: int
+    page: int
+    page_size: int 

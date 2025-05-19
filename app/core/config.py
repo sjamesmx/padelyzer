@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     }
     
     # Cache
-    CACHE_TTL: int = 3600  # 1 hora
+    CACHE_TTL: int = 3600
     
     # Celery
     CELERY_BROKER_URL: str = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
@@ -111,18 +111,22 @@ class Settings(BaseSettings):
         }
     }
     
-    # Error Handling
-    ERROR_MESSAGES: Dict[str, str] = {
-        "video_analysis_failed": "No se pudo completar el análisis del video",
-        "video_download_failed": "No se pudo descargar el video",
-        "video_processing_failed": "Error al procesar el video",
-        "notification_failed": "Error al enviar la notificación"
-    }
-    
-    model_config = {
-        "case_sensitive": True,
-        "env_file": ".env",
-        "extra": "allow"
-    }
+    # API Routes
+    AUTH_ROUTE: str = f"{API_V1_STR}/auth"
+    USERS_ROUTE: str = f"{API_V1_STR}/users"
+    VIDEOS_ROUTE: str = f"{API_V1_STR}/videos"
+    MATCHMAKING_ROUTE: str = f"{API_V1_STR}/matchmaking"
+    FRIENDS_ROUTE: str = f"{API_V1_STR}/friends"
+    SOCIAL_WALL_ROUTE: str = f"{API_V1_STR}/social_wall"
+    SUBSCRIPTIONS_ROUTE: str = f"{API_V1_STR}/subscriptions"
+    SEARCH_ROUTE: str = f"{API_V1_STR}/search"
+    ONBOARDING_ROUTE: str = f"{API_V1_STR}/onboarding"
+    GAMIFICATION_ROUTE: str = f"{API_V1_STR}/gamification"
+    VIDEO_ANALYSIS_ROUTE: str = f"{API_V1_STR}/video"
+    NOTIFICATIONS_ROUTE: str = f"{API_V1_STR}/notifications"
 
-settings = Settings() 
+@lru_cache()
+def get_settings() -> Settings:
+    return Settings()
+
+settings = get_settings() 

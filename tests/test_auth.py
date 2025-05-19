@@ -15,10 +15,12 @@ def test_signup_success(mocker):
     mock_user_ref = mocker.Mock()
     mock_users.document.return_value = mock_user_ref
     mock_db.collection.return_value = mock_users
-    mocker.patch("app.services.firebase.get_firebase_client", return_value=mock_db)
+    mocker.patch("app.config.firebase.db", mock_db)
 
     user_data = {
         "email": "test@example.com",
+        "password": "Test123!@#",
+        "username": "testuser",
         "name": "Test User",
         "nivel": "intermedio",
         "posicion_preferida": "derecha"
@@ -34,10 +36,12 @@ def test_signup_email_exists(mocker):
     mock_users.where.return_value = mock_query
     mock_query.get.return_value = [mocker.Mock()]
     mock_db.collection.return_value = mock_users
-    mocker.patch("app.services.firebase.get_firebase_client", return_value=mock_db)
+    mocker.patch("app.config.firebase.db", mock_db)
 
     user_data = {
         "email": "exists@example.com",
+        "password": "Test123!@#",
+        "username": "existinguser",
         "name": "Test User",
         "nivel": "intermedio",
         "posicion_preferida": "derecha"
@@ -47,9 +51,11 @@ def test_signup_email_exists(mocker):
     assert "ya está registrado" in response.text
 
 def test_signup_db_error(mocker):
-    mocker.patch("app.services.firebase.get_firebase_client", side_effect=Exception("DB error"))
+    mocker.patch("app.config.firebase.db", side_effect=Exception("DB error"))
     user_data = {
         "email": "fail@example.com",
+        "password": "Test123!@#",
+        "username": "failuser",
         "name": "Test User",
         "nivel": "intermedio",
         "posicion_preferida": "derecha"
@@ -66,26 +72,29 @@ def test_login_success(mocker):
     mock_users.where.return_value = mock_query
     mock_user_doc = mocker.Mock()
     mock_user_doc.to_dict.return_value = {
+        "id": "user123",
         "email": "login@example.com",
         "name": "Login User",
         "nivel": "avanzado",
         "posicion_preferida": "izquierda",
         "email_verified": True,
-        "hashed_password": "hashed_password_here"
+        "password": "hashed_password_here"
     }
     mock_query.get.return_value = [mock_user_doc]
     mock_db.collection.return_value = mock_users
-    mocker.patch("app.services.firebase.get_firebase_client", return_value=mock_db)
+    mocker.patch("app.config.firebase.db", mock_db)
     mocker.patch("app.core.security.create_access_token", return_value="fake-token")
+    mocker.patch("app.core.security.create_refresh_token", return_value="fake-refresh-token")
     mocker.patch("app.core.security.verify_password", return_value=True)
 
-    form_data = {
-        "username": "login@example.com",
+    login_data = {
+        "email": "login@example.com",
         "password": "anypass"
     }
-    response = client.post("/api/v1/auth/login", data=form_data)
+    response = client.post("/api/v1/auth/login", json=login_data)
     assert response.status_code == 200
     assert response.json()["access_token"] == "fake-token"
+    assert response.json()["refresh_token"] == "fake-refresh-token"
     assert response.json()["token_type"] == "bearer"
 
 def test_login_unverified_email(mocker):
@@ -95,23 +104,24 @@ def test_login_unverified_email(mocker):
     mock_users.where.return_value = mock_query
     mock_user_doc = mocker.Mock()
     mock_user_doc.to_dict.return_value = {
+        "id": "user123",
         "email": "unverified@example.com",
         "name": "Unverified User",
         "nivel": "principiante",
         "posicion_preferida": "derecha",
         "email_verified": False,
-        "hashed_password": "hashed_password_here"
+        "password": "hashed_password_here"
     }
     mock_query.get.return_value = [mock_user_doc]
     mock_db.collection.return_value = mock_users
-    mocker.patch("app.services.firebase.get_firebase_client", return_value=mock_db)
+    mocker.patch("app.config.firebase.db", mock_db)
     mocker.patch("app.core.security.verify_password", return_value=True)
 
-    form_data = {
-        "username": "unverified@example.com",
+    login_data = {
+        "email": "unverified@example.com",
         "password": "anypass"
     }
-    response = client.post("/api/v1/auth/login", data=form_data)
+    response = client.post("/api/v1/auth/login", json=login_data)
     assert response.status_code == 403
     assert "Email no verificado" in response.json()["detail"]
 
@@ -122,23 +132,23 @@ def test_login_user_not_found(mocker):
     mock_users.where.return_value = mock_query
     mock_query.get.return_value = []
     mock_db.collection.return_value = mock_users
-    mocker.patch("app.services.firebase.get_firebase_client", return_value=mock_db)
+    mocker.patch("app.config.firebase.db", mock_db)
 
-    form_data = {
-        "username": "notfound@example.com",
+    login_data = {
+        "email": "notfound@example.com",
         "password": "anypass"
     }
-    response = client.post("/api/v1/auth/login", data=form_data)
+    response = client.post("/api/v1/auth/login", json=login_data)
     assert response.status_code == 401
-    assert "Credenciales incorrectas" in response.text
+    assert "Credenciales inválidas" in response.text
 
 def test_login_db_error(mocker):
-    mocker.patch("app.services.firebase.get_firebase_client", side_effect=Exception("DB error"))
-    form_data = {
-        "username": "fail@example.com",
+    mocker.patch("app.config.firebase.db", side_effect=Exception("DB error"))
+    login_data = {
+        "email": "fail@example.com",
         "password": "anypass"
     }
-    response = client.post("/api/v1/auth/login", data=form_data)
+    response = client.post("/api/v1/auth/login", json=login_data)
     assert response.status_code == 500
     assert "Error al iniciar sesión" in response.text
 
@@ -159,7 +169,7 @@ def test_verify_email_success(mocker):
     mock_users.where.return_value = mock_query
     mock_query.get.return_value = [mocker.Mock()]
     mock_db.collection.side_effect = lambda x: mock_tokens if x == "email_verification_tokens" else mock_users
-    mocker.patch("app.services.firebase.get_firebase_client", return_value=mock_db)
+    mocker.patch("app.config.firebase.db", mock_db)
 
     response = client.post(
         "/api/v1/auth/verify-email",
@@ -175,7 +185,7 @@ def test_verify_email_invalid_token(mocker):
     mock_token_doc.exists = False
     mock_tokens.document.return_value = mock_token_doc
     mock_db.collection.return_value = mock_tokens
-    mocker.patch("app.services.firebase.get_firebase_client", return_value=mock_db)
+    mocker.patch("app.config.firebase.db", mock_db)
 
     response = client.post(
         "/api/v1/auth/verify-email",
@@ -196,7 +206,7 @@ def test_verify_email_expired_token(mocker):
     }
     mock_tokens.document.return_value = mock_token_doc
     mock_db.collection.return_value = mock_tokens
-    mocker.patch("app.services.firebase.get_firebase_client", return_value=mock_db)
+    mocker.patch("app.config.firebase.db", mock_db)
 
     response = client.post(
         "/api/v1/auth/verify-email",
@@ -218,7 +228,7 @@ def test_resend_verification_success(mocker):
     mock_query.get.return_value = [mock_user_doc]
     mock_tokens = mocker.Mock()
     mock_db.collection.side_effect = lambda x: mock_tokens if x == "email_verification_tokens" else mock_users
-    mocker.patch("app.services.firebase.get_firebase_client", return_value=mock_db)
+    mocker.patch("app.config.firebase.db", mock_db)
 
     response = client.post(
         "/api/v1/auth/resend-verification",
@@ -239,7 +249,7 @@ def test_resend_verification_already_verified(mocker):
     }
     mock_query.get.return_value = [mock_user_doc]
     mock_db.collection.return_value = mock_users
-    mocker.patch("app.services.firebase.get_firebase_client", return_value=mock_db)
+    mocker.patch("app.config.firebase.db", mock_db)
 
     response = client.post(
         "/api/v1/auth/resend-verification",
@@ -255,7 +265,7 @@ def test_resend_verification_user_not_found(mocker):
     mock_users.where.return_value = mock_query
     mock_query.get.return_value = []
     mock_db.collection.return_value = mock_users
-    mocker.patch("app.services.firebase.get_firebase_client", return_value=mock_db)
+    mocker.patch("app.config.firebase.db", mock_db)
 
     response = client.post(
         "/api/v1/auth/resend-verification",

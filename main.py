@@ -1,6 +1,6 @@
 import os
 import logging
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.endpoints import video_analysis, auth, users
 from routes.profile import router as profile_router
@@ -10,6 +10,7 @@ from routes.matchmaking import router as matchmaking_router
 from app.config.firebase import initialize_firebase
 from app.config.logging import setup_logging
 from routes.padel_iq import router as padel_iq_router
+from app.core.middleware import error_handling_middleware
 
 # Configurar logging
 logging.basicConfig(
@@ -48,6 +49,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Añadir middleware de manejo de errores
+app.middleware("http")(error_handling_middleware)
+
 # Incluir routers
 app.include_router(video_analysis.router, prefix="/api/v1/video", tags=["video_analysis"])
 app.include_router(profile_router, prefix="/api", tags=["profile"])
@@ -77,6 +81,10 @@ async def health_check():
         "status": "healthy",
         "version": "1.0.0"
     }
+
+@app.get("/test-error")
+async def test_error():
+    raise HTTPException(status_code=400, detail="Error de prueba")
 
 if __name__ == "__main__":
     import uvicorn
