@@ -1,82 +1,24 @@
-# Padelyzer
+# Padelyzer Backend
 
-A comprehensive padel analytics platform that helps players improve their game through video analysis and AI-powered insights.
-
-## Setup
-
-1. Clone the repository:
-```bash
-git clone https://github.com/sjamesmx/padelyzer.git
-cd padelyzer
-```
-
-2. Create and activate a virtual environment:
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-4. Set up Firebase credentials:
-   - Copy `firebase-credentials.template.json` to `firebase-credentials.json`
-   - Replace the placeholder values with your actual Firebase credentials
-   - Never commit `firebase-credentials.json` to version control
-
-5. Run the application:
-```bash
-python run.py
-```
-
-## Environment Variables
-
-Create a `.env` file in the root directory with the following variables:
-```
-FIREBASE_CREDENTIALS_PATH=path/to/firebase-credentials.json
-```
-
-## Development
-
-- Run tests: `pytest`
-- Format code: `black .`
-- Type checking: `pyright`
-
-## Security
-
-- Never commit sensitive credentials or API keys
-- Use environment variables for configuration
-- Follow the principle of least privilege when setting up service accounts
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
+Backend API para la aplicación Padelyzer, un sistema de análisis biomecánico para pádel que utiliza inteligencia artificial para mejorar el rendimiento de los jugadores.
 
 ## Características
 
-- Análisis de videos de entrenamiento y partidos
-- Detección de jugadores y golpes
-- Cálculo de métricas de rendimiento
-- Sistema de monitoreo con Prometheus y Grafana
-- Procesamiento asíncrono con Celery
-- Almacenamiento en Firebase
+- Análisis biomecánico de videos de pádel
+- Cálculo de Padel IQ y métricas de rendimiento
+- Sistema de matchmaking basado en niveles
+- Autenticación con Firebase
+- Almacenamiento de videos en Firebase Storage
+- Base de datos en Firestore
 
 ## Requisitos
 
-- Python 3.12+
-- Docker y Docker Compose
-- Cuenta de Firebase con credenciales
-- Redis
+- Python 3.8+
+- Firebase project
+- Redis (para tareas asíncronas)
+- OpenCV
+- MediaPipe
+- TensorFlow
 
 ## Instalación
 
@@ -86,83 +28,80 @@ git clone https://github.com/yourusername/padelyzer-backend.git
 cd padelyzer-backend
 ```
 
-2. Crear un entorno virtual e instalar dependencias:
+2. Crear y activar entorno virtual:
 ```bash
 python -m venv venv
 source venv/bin/activate  # En Windows: venv\Scripts\activate
+```
+
+3. Instalar dependencias:
+```bash
 pip install -r requirements.txt
 ```
 
-3. Configurar variables de entorno:
+4. Configurar variables de entorno:
 ```bash
 cp .env.example .env
-# Editar .env con tus configuraciones
+# Editar .env con tus credenciales de Firebase
 ```
 
-4. Configurar Firebase:
-- Crear un proyecto en Firebase
-- Descargar las credenciales y guardarlas como `firebase-credentials.json`
+## Configuración
+
+1. Crear un proyecto en Firebase Console
+2. Obtener las credenciales de servicio
+3. Configurar las variables de entorno en `.env`:
+```
+FIREBASE_PROJECT_ID=your-project-id
+FIREBASE_PRIVATE_KEY=your-private-key
+FIREBASE_CLIENT_EMAIL=your-client-email
+```
 
 ## Uso
 
-### Desarrollo
-
-1. Iniciar los servicios con Docker Compose:
+1. Iniciar el servidor:
 ```bash
-docker-compose up -d
+uvicorn main:app --reload
 ```
 
-2. La API estará disponible en `http://localhost:8000`
-3. Grafana estará disponible en `http://localhost:3000`
-4. Prometheus estará disponible en `http://localhost:9090`
-
-### Producción
-
-1. Construir las imágenes:
-```bash
-docker-compose build
+2. Acceder a la documentación API:
 ```
-
-2. Iniciar los servicios:
-```bash
-docker-compose -f docker-compose.prod.yml up -d
+http://localhost:8000/docs
 ```
 
 ## Estructura del Proyecto
 
 ```
 padelyzer-backend/
-├── api/                    # Endpoints de la API
-├── services/              # Servicios de negocio
-├── models/                # Modelos de datos
-├── tasks/                 # Tareas de Celery
-├── tests/                 # Tests
-├── prometheus/           # Configuración de Prometheus
-├── grafana/              # Configuración de Grafana
-├── docker-compose.yml    # Configuración de Docker Compose
-├── Dockerfile            # Configuración de Docker
-├── requirements.txt      # Dependencias de Python
-└── README.md            # Este archivo
+├── app/
+│   ├── api/
+│   │   └── v1/
+│   │       └── endpoints/
+│   ├── core/
+│   ├── schemas/
+│   └── services/
+├── routes/
+│   └── padel_iq/
+├── tests/
+├── .env.example
+├── main.py
+└── requirements.txt
 ```
+
+## Endpoints Principales
+
+- `POST /api/calculate_padel_iq`: Calcula métricas de Padel IQ
+- `POST /analyze/training`: Analiza video de entrenamiento
+- `POST /analyze/game`: Analiza video de juego
+- `GET /status/{task_id}`: Consulta estado del análisis
+- `GET /history/{user_id}`: Obtiene historial de análisis
 
 ## Testing
 
-Ejecutar los tests:
 ```bash
 pytest
 ```
 
-Ejecutar los tests con cobertura:
-```bash
-pytest --cov=.
-```
-
-## Monitoreo
-
-- Grafana: `http://localhost:3000` (admin/admin)
-- Prometheus: `http://localhost:9090`
-
-## Contribuir
+## Contribución
 
 1. Fork el repositorio
 2. Crear una rama para tu feature (`git checkout -b feature/AmazingFeature`)
@@ -172,7 +111,7 @@ pytest --cov=.
 
 ## Licencia
 
-Este proyecto está licenciado bajo la Licencia MIT - ver el archivo [LICENSE](LICENSE) para más detalles.
+Este proyecto está bajo la Licencia MIT - ver el archivo [LICENSE](LICENSE) para más detalles.
 
 ## Contacto
 
