@@ -1,0 +1,34 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: padelyzer-api
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "10"
+    spec:
+      containers:
+        - image: gcr.io/pdzr-458820/padelyzer-api
+          resources:
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          ports:
+            - containerPort: 8080
+          env:
+            - name: MAX_WORKERS
+              value: "2"
+            - name: MAX_THREADS
+              value: "8"
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: "/secrets/firebase-credentials.json"
+          volumeMounts:
+            - name: firebase-credentials
+              mountPath: /secrets
+              readOnly: true
+      volumes:
+        - name: firebase-credentials
+          secret:
+            secretName: firebase-credentials 

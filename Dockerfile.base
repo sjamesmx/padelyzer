@@ -9,13 +9,12 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements files
-COPY requirements-base.txt requirements-ml.txt ./
+# Copy only base requirements
+COPY requirements-base.txt ./
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements-base.txt && \
-    pip install --no-cache-dir -r requirements-ml.txt
+    pip install --no-cache-dir -r requirements-base.txt
 
 # Copy application code
 COPY . .

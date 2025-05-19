@@ -2,22 +2,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api.v1.api import api_router
-from app.api.v1.endpoints import (
-    friends,
-    social_wall,
-    matchmaking,
-    subscriptions,
-    search,
-    onboarding,
-    gamification,
-    video_analysis,
-    auth,
-    users,
-    videos,
-    notifications
-)
-from app.config.firebase import initialize_firebase
+from app.core.config.firebase import initialize_firebase
 import logging
+import os
+import uvicorn
 
 # Configurar logging
 logging.basicConfig(
@@ -55,19 +43,8 @@ def create_application() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Incluir routers con prefijos correctos
-    app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
-    app.include_router(users.router, prefix=f"{settings.API_V1_STR}/users", tags=["users"])
-    app.include_router(videos.router, prefix=f"{settings.API_V1_STR}/videos", tags=["videos"])
-    app.include_router(matchmaking.router, prefix=f"{settings.API_V1_STR}/matchmaking", tags=["matchmaking"])
-    app.include_router(friends.router, prefix=f"{settings.API_V1_STR}/friends", tags=["friends"])
-    app.include_router(social_wall.router, prefix=f"{settings.API_V1_STR}/social_wall", tags=["social_wall"])
-    app.include_router(subscriptions.router, prefix=f"{settings.API_V1_STR}/subscriptions", tags=["subscriptions"])
-    app.include_router(search.router, prefix=f"{settings.API_V1_STR}/search", tags=["search"])
-    app.include_router(onboarding.router, prefix=f"{settings.API_V1_STR}/onboarding", tags=["onboarding"])
-    app.include_router(gamification.router, prefix=f"{settings.API_V1_STR}/gamification", tags=["gamification"])
-    app.include_router(video_analysis.router, prefix=f"{settings.API_V1_STR}/video", tags=["video"])
-    app.include_router(notifications.router, prefix=f"{settings.API_V1_STR}/notifications", tags=["notifications"])
+    # Incluir el router principal
+    app.include_router(api_router, prefix=settings.API_V1_STR)
 
     @app.get("/health")
     async def health_check():
@@ -75,4 +52,8 @@ def create_application() -> FastAPI:
 
     return app
 
-app = create_application() 
+app = create_application()
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port) 

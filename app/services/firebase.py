@@ -1,16 +1,29 @@
 import logging
-from app.config.firebase import initialize_firebase
-from firebase_admin import firestore, storage
+from firebase_admin import credentials, firestore, storage, initialize_app, auth
+from app.core.config.firebase import initialize_firebase
 from app.core.config import settings
-from typing import Optional
+from typing import Optional, Tuple
 import os
 from datetime import datetime
+import firebase_admin
 
 logger = logging.getLogger(__name__)
 
-def get_firebase_client():
-    """Obtiene una instancia del cliente de Firestore."""
-    return firestore.client()
+def get_firebase_client() -> Tuple[firestore.Client, auth.Client]:
+    """Obtiene las instancias de los clientes de Firestore y Auth."""
+    try:
+        # Asegurarse de que Firebase está inicializado
+        if not firebase_admin._apps:
+            initialize_firebase()
+        
+        # Obtener la instancia de la app
+        app = firebase_admin.get_app()
+        
+        # Retornar los clientes usando la app
+        return firestore.client(app), auth.Client(app)
+    except Exception as e:
+        logger.error(f"Error getting Firebase clients: {str(e)}")
+        raise
 
 def get_storage_client():
     """Obtiene una instancia del cliente de Storage."""
@@ -28,7 +41,7 @@ def create_user(user_data: dict) -> Optional[str]:
     Crea un nuevo usuario en Firestore usando el email como ID del documento.
     """
     try:
-        db = get_firebase_client()
+        db, _ = get_firebase_client()
         users_ref = db.collection('users')
         
         # Verificar si el email ya existe
@@ -68,14 +81,14 @@ def create_user(user_data: dict) -> Optional[str]:
         return user_ref.id
     except Exception as e:
         logger.error(f"Error al crear usuario: {str(e)}")
-        raise 
+        raise
 
 def get_user_by_email(email: str) -> Optional[dict]:
     """
     Obtiene un usuario por su email.
     """
     try:
-        db = get_firebase_client()
+        db, _ = get_firebase_client()
         users_ref = db.collection('users')
         query = users_ref.where('email', '==', email).limit(1)
         results = query.get()
@@ -89,11 +102,11 @@ def get_user_by_email(email: str) -> Optional[dict]:
         return user_data
     except Exception as e:
         logger.error(f"Error al obtener usuario por email: {str(e)}")
-        return None 
+        return None
 
 def create_user_document(user_data: dict):
     """Crea un documento de usuario en Firestore."""
-    db = get_firebase_client()
+    db, _ = get_firebase_client()
     user_ref = db.collection('users').document()
     user_data.update({
         'created_at': datetime.utcnow(),
@@ -106,7 +119,7 @@ def create_user_document(user_data: dict):
 
 def update_user_document(user_id: str, update_data: dict):
     """Actualiza un documento de usuario en Firestore."""
-    db = get_firebase_client()
+    db, _ = get_firebase_client()
     user_ref = db.collection('users').document(user_id)
     update_data['updated_at'] = datetime.utcnow()
     user_ref.update(update_data) 

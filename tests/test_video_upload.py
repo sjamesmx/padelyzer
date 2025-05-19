@@ -1,7 +1,7 @@
 import requests
 import os
 import tempfile
-from app.services.storage import upload_video, get_video_blueprint
+from app.services.video_service import upload_video, get_video_blueprint
 from app.services.firebase import get_firebase_client, initialize_firebase
 import logging
 

@@ -1,32 +1,50 @@
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
-from app.core.config import settings
-from app.services.firebase import get_firebase_client
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.schemas.user import UserInDB
+from app.services.firebase import get_firebase_client
+import logging
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+logger = logging.getLogger(__name__)
+security = HTTPBearer()
 
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserInDB:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="No se pudo validar las credenciales",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> UserInDB:
+    """
+    Obtiene el usuario actual basado en el token de Firebase.
+    """
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
-    db = get_firebase_client()
-    users_ref = db.collection('users')
-    query = users_ref.where('email', '==', email)
-    results = query.get()
-    if not results:
-        raise credentials_exception
-    user_doc = results[0]
-    user_data = user_doc.to_dict()
-    user_data['id'] = user_doc.id
-    return UserInDB(**user_data) 
+        token = credentials.credentials
+        db, auth_client = get_firebase_client()
+        
+        # Verificar el token con Firebase Admin
+        try:
+            decoded_token = auth_client.verify_id_token(token)
+            user_id = decoded_token['uid']
+        except Exception as e:
+            logger.error(f"Error verificando token: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token inválido",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Obtener datos del usuario de Firestore
+        user_doc = db.collection('users').document(user_id).get()
+        if not user_doc.exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuario no encontrado"
+            )
+            
+        user_data = user_doc.to_dict()
+        user_data['id'] = user_id
+        return UserInDB(**user_data)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error en autenticación: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credenciales inválidas",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) 

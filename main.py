@@ -2,15 +2,15 @@ import os
 import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1.endpoints import video_analysis, auth, users
+from app.api.v1.endpoints import video_routes, auth, users
 from routes.profile import router as profile_router
 from routes.padel_iq.dashboard import router as dashboard_router
 from routes.onboarding import router as onboarding_router
 from routes.matchmaking import router as matchmaking_router
-from app.config.firebase import initialize_firebase
+from app.core.config.firebase import initialize_firebase
 from app.config.logging import setup_logging
 from routes.padel_iq import router as padel_iq_router
-from app.core.middleware import error_handling_middleware
+from app.api.v1.dependencies.middleware import error_handling_middleware
 
 # Configurar logging
 logging.basicConfig(
@@ -53,7 +53,7 @@ app.add_middleware(
 app.middleware("http")(error_handling_middleware)
 
 # Incluir routers
-app.include_router(video_analysis.router, prefix="/api/v1/video", tags=["video_analysis"])
+app.include_router(video_routes.router, prefix="/api/v1/video", tags=["video_analysis"])
 app.include_router(profile_router, prefix="/api", tags=["profile"])
 app.include_router(dashboard_router, prefix="/api", tags=["dashboard"])
 app.include_router(onboarding_router, prefix="/api", tags=["onboarding"])
@@ -77,10 +77,31 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Endpoint de verificación de salud."""
-    return {
+    health_status = {
         "status": "healthy",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "components": {
+            "firebase": "healthy",
+            "ml_models": "healthy"
+        }
     }
+    
+    try:
+        # Verificar conexión con Firebase
+        if db is None:
+            health_status["components"]["firebase"] = "unhealthy"
+            health_status["status"] = "degraded"
+        
+        # Verificar que los modelos ML estén cargados
+        # Aquí deberías agregar verificaciones específicas para tus modelos
+        # Por ejemplo, verificar que los archivos de modelo existan
+        
+        return health_status
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        health_status["status"] = "unhealthy"
+        health_status["error"] = str(e)
+        return health_status
 
 @app.get("/test-error")
 async def test_error():

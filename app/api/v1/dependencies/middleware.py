@@ -45,24 +45,7 @@ async def error_handling_middleware(request: Request, call_next):
     except AppException as exc:
         # Manejar excepciones personalizadas de la aplicación
         logger.error(
-            f"Error de aplicación en {request.method} {request.url.path}: {exc.detail}",
-            extra={
-                "status_code": exc.status_code,
-                "method": request.method,
-                "path": request.url.path,
-                "client_host": request.client.host if request.client else None,
-                "error_code": exc.error_code
-            }
-        )
-        return create_error_response(
-            status_code=exc.status_code,
-            message=str(exc.detail),
-            error_type=exc.__class__.__name__
-        )
-    except PadelException as exc:
-        # Manejar excepciones específicas de Padelyzer
-        logger.error(
-            f"Error en {request.method} {request.url.path}: {exc.detail}",
+            f"Error de aplicación en {request.method} {request.url.path}: {exc.message}",
             extra={
                 "status_code": exc.status_code,
                 "method": request.method,
@@ -72,7 +55,23 @@ async def error_handling_middleware(request: Request, call_next):
         )
         return create_error_response(
             status_code=exc.status_code,
-            message=str(exc.detail),
+            message=exc.message,
+            error_type=exc.__class__.__name__
+        )
+    except PadelException as exc:
+        # Manejar excepciones específicas de Padelyzer
+        logger.error(
+            f"Error en {request.method} {request.url.path}: {exc.message}",
+            extra={
+                "status_code": exc.status_code,
+                "method": request.method,
+                "path": request.url.path,
+                "client_host": request.client.host if request.client else None
+            }
+        )
+        return create_error_response(
+            status_code=exc.status_code,
+            message=exc.message,
             error_type=exc.__class__.__name__
         )
     except Exception as exc:

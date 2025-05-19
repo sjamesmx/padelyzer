@@ -35,11 +35,15 @@ class UserUpdate(BaseModel):
     availability: Optional[List[str]] = None
     location: Optional[UserLocation] = None
 
-class UserInDB(UserBase):
+class UserInDB(BaseModel):
     id: str
+    email: Optional[EmailStr] = None
+    name: Optional[str] = None
+    nivel: Optional[str] = None
+    posicion_preferida: Optional[str] = None
     email_verified: bool = False
     is_active: bool = True
-    fecha_registro: datetime
+    fecha_registro: Optional[datetime] = None
     ultimo_analisis: Optional[str] = None
     tipo_ultimo_analisis: Optional[str] = None
     fecha_ultimo_analisis: Optional[datetime] = None

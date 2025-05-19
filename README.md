@@ -117,4 +117,67 @@ Este proyecto está bajo la Licencia MIT - ver el archivo [LICENSE](LICENSE) par
 
 Tu Nombre - [@tutwitter](https://twitter.com/tutwitter) - email@example.com
 
-Link del Proyecto: [https://github.com/yourusername/padelyzer-backend](https://github.com/yourusername/padelyzer-backend) 
+Link del Proyecto: [https://github.com/yourusername/padelyzer-backend](https://github.com/yourusername/padelyzer-backend)
+
+## Video Upload Endpoint
+
+The video upload functionality has been unified into a single endpoint:
+
+- **Endpoint**: `POST /api/v1/video/upload`
+- **Description**: Uploads a video to Firebase Storage and initiates analysis
+- **Authentication**: Requires Firebase JWT token
+- **Implementation**: Uses `upload_video` from `app/services/video_service.py`
+
+### Request Format
+
+```http
+POST /api/v1/video/upload
+Content-Type: multipart/form-data
+Authorization: Bearer <firebase_jwt_token>
+
+file: <video_file>
+video_type: training|game|torneo
+description: <optional_description>
+player_position: <optional_json_string>
+```
+
+### Response Format
+
+```json
+{
+    "video_id": "unique-video-id",
+    "url": "https://firebasestorage.googleapis.com/v0/b/pdzr-458820.appspot.com/o/videos/...",
+    "status": "pending|processing|completed|failed",
+    "created_at": "2024-05-19T10:00:00Z",
+    "message": "Video uploaded successfully"
+}
+```
+
+### Features
+
+- Validates video file type and size
+- Generates unique blueprint to prevent duplicates
+- Stores video in Firebase Storage
+- Creates analysis record in Firestore
+- Returns signed URL for video access
+- Handles duplicate uploads gracefully
+
+### Notes
+
+- Removed redundant `/api/v1/videos/upload` endpoint (19/05/2024)
+- All video uploads now use the correct Firebase Storage URL format
+- Video analysis is initiated automatically after upload
+- Player position information is optional but recommended for better analysis 
+
+## Stabilization Notes (19/05/2025)
+- Fixed `ModuleNotFoundError` by creating `app/api/v1/dependencies/exceptions.py` with `PadelException` and `AppException`.
+- Unified video upload endpoint handles errors with custom exceptions.
+- Added test for invalid file type handling.
+- All tests pass and server starts successfully.
+
+## TensorFlow Warning Suppression (19/05/2025)
+- Suppressed non-critical TensorFlow Lite warnings during server startup
+- Set TensorFlow logging level to ERROR to filter out WARNING and INFO messages
+- Configured via `TF_CPP_MIN_LOG_LEVEL=2` environment variable
+- No impact on video analysis functionality
+- Added test coverage in `tests/test_analysis_manager.py` 

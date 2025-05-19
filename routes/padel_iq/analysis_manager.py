@@ -1,8 +1,14 @@
+import os
 import logging
+import tensorflow as tf
 from datetime import datetime
 from config.mock_firebase import client
 from .video_processing import procesar_video_juego
 from .pair_metrics import calculate_pair_metrics
+
+# Suppress TensorFlow warnings
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # 0 = all logs, 1 = filter INFO, 2 = filter WARNING, 3 = filter ERROR
+tf.get_logger().setLevel(logging.ERROR)
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)

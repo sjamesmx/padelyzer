@@ -2,10 +2,10 @@ import os
 import json
 import time
 import firebase_admin
-from firebase_admin import credentials, initialize_app, storage, firestore
+from firebase_admin import credentials, initialize_app, storage, firestore, auth
 from app.core.config import settings
 import logging
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, Tuple
 from datetime import datetime
 from google.cloud import firestore as cloud_firestore
 from dotenv import load_dotenv
@@ -54,74 +54,44 @@ def validate_credentials(cred_dict: Dict[str, Any]) -> bool:
         return False
 
 def initialize_firebase():
-    """
-    Inicializa la conexión con Firebase usando variables de entorno.
-    """
     try:
-        # Cargar variables de entorno
-        if "PYTEST_CURRENT_TEST" in os.environ:
-            load_dotenv(".env.test")
-        else:
-            load_dotenv()
-        
-        # Verificar que todas las variables necesarias estén presentes
-        required_vars = [
-            'FIREBASE_PROJECT_ID',
-            'FIREBASE_PRIVATE_KEY_ID',
-            'FIREBASE_PRIVATE_KEY',
-            'FIREBASE_CLIENT_EMAIL',
-            'FIREBASE_CLIENT_ID',
-            'FIREBASE_CLIENT_CERT_URL'
-        ]
-        
-        missing_vars = [var for var in required_vars if not os.getenv(var)]
-        if missing_vars:
-            raise ValueError(f"Faltan variables de entorno: {', '.join(missing_vars)}")
-        
-        # Crear diccionario de credenciales
-        cred_dict = {
-            "type": "service_account",
-            "project_id": os.getenv('FIREBASE_PROJECT_ID'),
-            "private_key_id": os.getenv('FIREBASE_PRIVATE_KEY_ID'),
-            "private_key": os.getenv('FIREBASE_PRIVATE_KEY').replace('\\n', '\n'),
-            "client_email": os.getenv('FIREBASE_CLIENT_EMAIL'),
-            "client_id": os.getenv('FIREBASE_CLIENT_ID'),
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "client_x509_cert_url": os.getenv('FIREBASE_CLIENT_CERT_URL')
-        }
-        
-        # Validar credenciales
+        load_dotenv()
+        cred_path = os.getenv('FIREBASE_CREDENTIALS_PATH')
+        if not cred_path:
+            raise ValueError("FIREBASE_CREDENTIALS_PATH no está configurado en las variables de entorno")
+        if not os.path.exists(cred_path):
+            raise FileNotFoundError(f"El archivo de credenciales no existe: {cred_path}")
+        with open(cred_path, 'r') as f:
+            cred_dict = json.load(f)
         if not validate_credentials(cred_dict):
             raise ValueError("Credenciales de Firebase inválidas")
-        
-        # Inicializar Firebase solo si no está inicializado
         if not firebase_admin._apps:
             cred = credentials.Certificate(cred_dict)
-            app = initialize_app(cred)
-            logger.info("Firebase inicializado correctamente")
-        
-        return firestore.client()
-        
+            app = initialize_app(cred, {
+                'storageBucket': settings.FIREBASE_STORAGE_BUCKET
+            })
+        else:
+            app = firebase_admin.get_app()
+        return firestore.client(app), auth.Client(app)
     except Exception as e:
         logger.error(f"Error al inicializar Firebase: {str(e)}")
         raise
 
 # Inicializar
-db = initialize_firebase()
+db, auth_client = initialize_firebase()
 
-def get_firebase_client() -> Any:
+def get_firebase_client() -> Tuple[firestore.Client, auth.Client]:
     """
-    Obtiene una instancia del cliente de Firestore.
+    Obtiene las instancias de los clientes de Firestore y Auth.
     
     Returns:
-        Any: Cliente de Firestore.
+        Tuple[firestore.Client, auth.Client]: Tupla con los clientes de Firestore y Auth
     """
     try:
-        return firestore.client()
+        app = firebase_admin.get_app()
+        return firestore.client(app), auth.Client(app)
     except Exception as e:
-        logger.error(f"Error al obtener cliente de Firestore: {str(e)}")
+        logger.error(f"Error al obtener clientes de Firebase: {str(e)}")
         raise
 
 def get_storage_bucket() -> Any:

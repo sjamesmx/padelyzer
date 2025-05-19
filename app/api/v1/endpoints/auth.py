@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from app.core.security import create_access_token, verify_password, get_password_hash
+from app.core.security import create_access_token, create_refresh_token, verify_password, get_password_hash
 from app.schemas.user import User, UserCreate, Token
 from app.schemas.auth import (
     TokenRefreshRequest, TokenRefreshResponse, LogoutRequest, ForgotPasswordRequest, ResetPasswordRequest,
@@ -17,8 +17,8 @@ from datetime import datetime, timedelta
 import logging
 from uuid import uuid4
 from app.core.config import settings
-from app.core.exceptions import AuthenticationError
-from app.config.firebase import db
+from app.core.security.exceptions import AuthenticationError
+from app.core.config.firebase import db
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -28,37 +28,63 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 MAX_VERIFICATION_ATTEMPTS = 3
 VERIFICATION_GRACE_PERIOD_DAYS = 3
 
-@router.post("/signup", response_model=User, summary="Registro de usuario", tags=["auth"])
-async def register_user(user_data: UserRegistration):
+@router.post("/register", response_model=User, summary="Registro de usuario", tags=["auth"])
+async def register_user(user_data: UserCreate):
     """
     Registra un nuevo usuario en el sistema.
     
     - **email**: Email válido del usuario
     - **password**: Contraseña que cumple con los requisitos de seguridad
-    - **username**: Nombre de usuario único
-    - **name**: Nombre completo del usuario (opcional)
-    - **nivel**: Nivel de juego (opcional)
-    - **posicion_preferida**: Posición preferida (opcional)
+    - **name**: Nombre completo del usuario
+    - **nivel**: Nivel de juego
+    - **posicion_preferida**: Posición preferida
     """
-    # Verificar si el email ya está registrado
-    user_ref = db.collection('users').where('email', '==', user_data.email).get()
-    if user_ref:
-        raise AuthenticationError("El email ya está registrado")
-    
-    # Crear nuevo usuario
-    user_dict = user_data.dict()
-    user_dict['password'] = get_password_hash(user_dict['password'])
-    user_dict['created_at'] = datetime.utcnow()
-    user_dict['updated_at'] = datetime.utcnow()
-    user_dict['is_active'] = True
-    user_dict['is_verified'] = False
-    
-    # Guardar en Firestore
-    user_ref = db.collection('users').document()
-    user_dict['id'] = user_ref.id
-    user_ref.set(user_dict)
-    
-    return User(**user_dict)
+    try:
+        # Verificar si el email ya está registrado
+        user_ref = db.collection('users').where('email', '==', user_data.email).get()
+        if user_ref:
+            raise AuthenticationError("El email ya está registrado")
+        
+        # Crear nuevo usuario
+        now = datetime.utcnow()
+        user_dict = user_data.dict()
+        user_dict.update({
+            'password': get_password_hash(user_dict['password']),
+            'created_at': now,
+            'updated_at': now,
+            'fecha_registro': now,
+            'is_active': True,
+            'email_verified': False,
+            'preferences': {
+                'notifications': True,
+                'email_notifications': True,
+                'language': 'es',
+                'timezone': 'UTC'
+            },
+            'stats': {
+                'matches_played': 0,
+                'matches_won': 0,
+                'total_points': 0
+            },
+            'achievements': [],
+            'blocked_users': [],
+            'clubs': [],
+            'availability': [],
+            'onboarding_status': 'pending'
+        })
+        
+        # Guardar en Firestore
+        user_ref = db.collection('users').document()
+        user_dict['id'] = user_ref.id
+        user_ref.set(user_dict)
+        
+        return User(**user_dict)
+    except Exception as e:
+        logger.error(f"Error al registrar usuario: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 
 @router.post("/verify-email", summary="Verificar email", tags=["auth"])
 async def verify_email(request: EmailVerificationRequest):
@@ -67,7 +93,7 @@ async def verify_email(request: EmailVerificationRequest):
     - En desarrollo, también acepta el ID del usuario como token.
     """
     try:
-        db = get_firebase_client()
+        db, _ = get_firebase_client()
         
         # En desarrollo, permitir usar el ID del usuario como token
         if settings.ENVIRONMENT == "development":
@@ -218,7 +244,7 @@ async def login(user_data: UserLogin):
     """
     # Buscar usuario por email
     user_ref = db.collection('users').where('email', '==', user_data.email).get()
-    if not user_ref:
+    if not user_ref or len(user_ref) == 0:
         raise AuthenticationError("Credenciales inválidas")
     
     user = user_ref[0].to_dict()
