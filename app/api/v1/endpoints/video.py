@@ -5,33 +5,19 @@ from app.schemas.video import (
     VideoAnalysisRequest, VideoAnalysisResponse
 )
 from app.services.firebase import get_firebase_client
-from app.services.auth import verify_token
+from app.core.deps import get_current_user
+from app.schemas.user import UserInDB
 from datetime import datetime
 import logging
 from typing import List
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login")
-
-async def get_current_user(token: str = Depends(oauth2_scheme)):
-    """
-    Obtiene el usuario actual basado en el token JWT.
-    """
-    try:
-        payload = verify_token(token)
-        return payload
-    except Exception as e:
-        logger.error(f"Error al verificar token: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token inválido o expirado"
-        )
 
 @router.post("/training", response_model=VideoResponse, summary="Subir video de entrenamiento", tags=["videos"])
 async def upload_training_video(
     video: VideoCreate,
-    current_user: dict = Depends(get_current_user)
+    current_user: UserInDB = Depends(get_current_user)
 ):
     """
     Sube un video de entrenamiento.
@@ -46,7 +32,7 @@ async def upload_training_video(
         db = get_firebase_client()
         video_data = video.dict()
         video_data.update({
-            "user_id": current_user["sub"],
+            "user_id": current_user.id,
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow(),
             "status": VideoStatus.PENDING
@@ -56,7 +42,7 @@ async def upload_training_video(
         video_data["id"] = video_ref.id
         video_ref.set(video_data)
 
-        logger.info(f"Video de entrenamiento subido por {current_user['sub']}: {video_data['id']}")
+        logger.info(f"Video de entrenamiento subido por {current_user.id}: {video_data['id']}")
         return video_data
 
     except HTTPException as he:
@@ -71,7 +57,7 @@ async def upload_training_video(
 @router.post("/game", response_model=VideoResponse, summary="Subir video de juego", tags=["videos"])
 async def upload_game_video(
     video: VideoCreate,
-    current_user: dict = Depends(get_current_user)
+    current_user: UserInDB = Depends(get_current_user)
 ):
     """
     Sube un video de juego.
@@ -86,7 +72,7 @@ async def upload_game_video(
         db = get_firebase_client()
         video_data = video.dict()
         video_data.update({
-            "user_id": current_user["sub"],
+            "user_id": current_user.id,
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow(),
             "status": VideoStatus.PENDING
@@ -96,7 +82,7 @@ async def upload_game_video(
         video_data["id"] = video_ref.id
         video_ref.set(video_data)
 
-        logger.info(f"Video de juego subido por {current_user['sub']}: {video_data['id']}")
+        logger.info(f"Video de juego subido por {current_user.id}: {video_data['id']}")
         return video_data
 
     except HTTPException as he:
@@ -109,16 +95,16 @@ async def upload_game_video(
         )
 
 @router.get("/", response_model=List[VideoResponse], summary="Obtener lista de videos", tags=["videos"])
-async def get_videos(current_user: dict = Depends(get_current_user)):
+async def get_videos(current_user: UserInDB = Depends(get_current_user)):
     """
     Obtiene la lista de videos del usuario.
     """
     try:
         db = get_firebase_client()
-        videos_ref = db.collection("videos").where("user_id", "==", current_user["sub"]).get()
+        videos_ref = db.collection("videos").where("user_id", "==", current_user.id).get()
         videos = [video.to_dict() for video in videos_ref]
 
-        logger.info(f"Videos obtenidos para {current_user['sub']}: {len(videos)} videos")
+        logger.info(f"Videos obtenidos para {current_user.id}: {len(videos)} videos")
         return videos
 
     except Exception as e:
@@ -134,41 +120,49 @@ async def get_video(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Obtiene un video específico.
+    Endpoint para obtener información de un video.
     """
     try:
-        db = get_firebase_client()
-        video_ref = db.collection("videos").document(video_id).get()
-
-        if not video_ref.exists:
+        db, _ = get_firebase_client()
+        video_ref = db.collection('videos').document(video_id)
+        video_doc = video_ref.get()
+        
+        if not video_doc.exists:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
+                status_code=404,
                 detail="Video no encontrado"
             )
-
-        video_data = video_ref.to_dict()
-        if video_data["user_id"] != current_user["sub"]:
+            
+        video_data = video_doc.to_dict()
+        
+        # Verificar que el usuario tenga acceso al video
+        if video_data['user_id'] != current_user['id']:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="No autorizado para ver este video"
+                status_code=403,
+                detail="No tienes permiso para ver este video"
             )
-
-        logger.info(f"Video obtenido para {current_user['sub']}: {video_id}")
-        return video_data
-
-    except HTTPException as he:
-        raise he
+            
+        return VideoResponse(
+            video_id=video_doc.id,
+            video_url=video_data['video_url'],
+            status=video_data['status'],
+            created_at=video_data['created_at'],
+            updated_at=video_data['updated_at']
+        )
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error al obtener video {video_id}: {str(e)}")
+        logger.error(f"Error al obtener video: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al obtener video"
+            status_code=500,
+            detail="Error al obtener el video"
         )
 
 @router.post("/analyze", response_model=VideoAnalysisResponse, summary="Analizar video", tags=["videos"])
 async def analyze_video(
     request: VideoAnalysisRequest,
-    current_user: dict = Depends(get_current_user)
+    current_user: UserInDB = Depends(get_current_user)
 ):
     """
     Inicia el análisis de un video.
@@ -184,7 +178,7 @@ async def analyze_video(
             )
 
         video_data = video_ref.to_dict()
-        if video_data["user_id"] != current_user["sub"]:
+        if video_data["user_id"] != current_user.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="No autorizado para analizar este video"
@@ -211,7 +205,7 @@ async def analyze_video(
             "updated_at": datetime.utcnow()
         })
 
-        logger.info(f"Análisis completado para video {request.video_id} por {current_user['sub']}")
+        logger.info(f"Análisis completado para video {request.video_id} por {current_user.id}")
         return VideoAnalysisResponse(
             video_id=request.video_id,
             status=VideoStatus.COMPLETED,
@@ -225,4 +219,49 @@ async def analyze_video(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al analizar video"
+        )
+
+@router.delete("/{video_id}")
+async def delete_video_endpoint(
+    video_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Endpoint para eliminar un video.
+    """
+    try:
+        db, _ = get_firebase_client()
+        video_ref = db.collection('videos').document(video_id)
+        video_doc = video_ref.get()
+        
+        if not video_doc.exists:
+            raise HTTPException(
+                status_code=404,
+                detail="Video no encontrado"
+            )
+            
+        video_data = video_doc.to_dict()
+        
+        # Verificar que el usuario tenga acceso al video
+        if video_data['user_id'] != current_user['id']:
+            raise HTTPException(
+                status_code=403,
+                detail="No tienes permiso para eliminar este video"
+            )
+            
+        # Eliminar video de Firebase Storage
+        delete_file(video_data['video_path'])
+        
+        # Eliminar documento de video
+        video_ref.delete()
+        
+        return {"message": "Video eliminado correctamente"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al eliminar video: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Error al eliminar el video"
         ) 

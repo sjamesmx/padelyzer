@@ -32,46 +32,27 @@ def test_client():
     from app.main import app
     return TestClient(app)
 
-@pytest.fixture(scope="session")
-def mock_firebase():
-    """Mock de Firebase Admin para pruebas."""
-    # Mock de Firebase Admin
-    mock_app = MagicMock()
-    mock_cred = MagicMock()
-    
-    # Configurar el mock para que no intente conexiones reales
-    with patch('firebase_admin.initialize_app', return_value=mock_app) as mock_init:
-        with patch('firebase_admin.credentials.Certificate', return_value=mock_cred):
-            # Inicializar Firebase Admin con el mock
-            if not firebase_admin._apps:
-                firebase_admin.initialize_app(mock_cred)
-            
-            # Crear mock de Firestore
-            mock_db = MagicMock()
-            mock_collection = MagicMock()
-            mock_document = MagicMock()
-            mock_query = MagicMock()
-            
-            # Configurar el mock para simular operaciones de Firestore
-            mock_db.collection.return_value = mock_collection
-            mock_collection.document.return_value = mock_document
-            mock_collection.where.return_value = mock_query
-            mock_query.get.return_value = []
-            
-            # Mock de documentos con respuestas inmediatas
-            mock_document.get.return_value = MagicMock(exists=False)
-            mock_document.set.return_value = None
-            mock_document.update.return_value = None
-            mock_document.delete.return_value = None
-            
-            # Configurar el mock para que no intente conexiones reales
-            mock_db._client = MagicMock()
-            mock_db._client._credentials = MagicMock()
-            mock_db._client._credentials.before_request = MagicMock()
-            
-            # Reemplazar el cliente de Firestore con nuestro mock
-            with patch('firebase_admin.firestore.client', return_value=mock_db):
-                yield mock_db
+@pytest.fixture(autouse=True)
+def mock_firebase_init():
+    """Mock Firebase initialization for all tests."""
+    with patch('firebase_admin.initialize_app') as mock_init:
+        with patch('firebase_admin.get_app') as mock_get_app:
+            mock_app = MagicMock()
+            mock_get_app.return_value = mock_app
+            yield mock_app
+
+@pytest.fixture(autouse=True)
+def mock_firestore():
+    """Mock Firestore client for all tests."""
+    with patch('firebase_admin.firestore.client') as mock_client:
+        mock_db = MagicMock()
+        mock_client.return_value = mock_db
+        yield mock_db
+
+@pytest.fixture(autouse=True)
+def patch_tasks_import():
+    with patch.dict('sys.modules', {'tasks': MagicMock()}):
+        yield
 
 @pytest.fixture(scope="session")
 def test_user():
