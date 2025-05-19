@@ -1,20 +1,24 @@
-# Usar imagen base de Python
-FROM python:3.12-slim
+# Usar una imagen base con soporte para OpenCV
+FROM python:3.9-slim
 
-# Establecer directorio de trabajo
-WORKDIR /app
-
-# Instalar dependencias del sistema
+# Instalar dependencias del sistema necesarias para OpenCV
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Copiar requirements.txt e instalar dependencias de Python
+# Establecer el directorio de trabajo
+WORKDIR /app
+
+# Copiar requirements.txt primero para aprovechar la caché de Docker
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir "pydantic[email]" && \
-    pip install --no-cache-dir email-validator
+
+# Instalar dependencias de Python
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar el código de la aplicación
 COPY . .
@@ -22,9 +26,17 @@ COPY . .
 # Configurar variables de entorno
 ENV PORT=8080
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 
-# Exponer puerto
+# Exponer el puerto
 EXPOSE 8080
 
-# Comando por defecto para Cloud Run
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"] 
+# Comando para ejecutar la aplicación con Gunicorn
+CMD exec gunicorn \
+    --bind :$PORT \
+    --workers 1 \
+    --threads 8 \
+    --timeout 0 \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --log-level info \
+    main:app 

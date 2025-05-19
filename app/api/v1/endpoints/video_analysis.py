@@ -10,6 +10,10 @@ from app.core.deps import get_current_user
 from app.schemas.user import UserInDB
 import uuid
 from app.tasks import analyze_video
+from app.core.video_validator import validate_video_with_retry
+from app.core.video_optimizer import VideoOptimizer
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -232,38 +236,66 @@ async def calculate_padel_iq(data: PadelIQRequest, current_user: UserInDB = Depe
     logger.info(f"Procesando video para user_id: {user_id}, video_url: {video_url}, tipo_video: {tipo_video}")
 
     try:
+        # Inicializar optimizador
+        optimizer = VideoOptimizer()
+        
+        # Validar y optimizar video
+        video_hash = optimizer.get_video_hash(str(video_url))
+        cached_result = await optimizer.get_cached_result(video_hash)
+        
+        if cached_result:
+            logger.info(f"Usando resultado en caché para video {video_url}")
+            return cached_result
+
+        # Validar video antes de procesar
+        await validate_video_with_retry(str(video_url))
+
         # Actualizar estado del video
         db = get_db()
         video_id = str(uuid.uuid4())
-        db.collection("videos").document(video_id).update({
+        db.collection("videos").document(video_id).set({
             "analysis_status": "processing",
             "analysis_progress": 0,
-            "analysis_started_at": firestore.SERVER_TIMESTAMP
+            "analysis_started_at": firestore.SERVER_TIMESTAMP,
+            "user_id": user_id,
+            "video_url": str(video_url),
+            "tipo_video": tipo_video
         })
 
-        # Procesar el video según el tipo
-        if tipo_video == "entrenamiento":
-            logger.info("Iniciando procesamiento de video de entrenamiento")
-            result = analysis_manager.procesar_video_entrenamiento(
-                video_url=video_url,
-                user_id=user_id,
-                player_position=player_position
-            )
-        elif tipo_video == "juego":
-            logger.info("Iniciando procesamiento de video de juego")
-            result = analysis_manager.procesar_video_juego(
-                video_url=video_url,
-                user_id=user_id,
-                player_position=player_position,
-                game_splits=game_splits
-            )
-        else:
-            logger.error("Tipo de video no soportado")
-            db.collection("videos").document(video_id).update({
-                "analysis_status": "error",
-                "analysis_error": "Tipo de video no soportado"
-            })
-            raise HTTPException(status_code=400, detail="Tipo de video no soportado")
+        # Procesar el video según el tipo usando el optimizador
+        with ThreadPoolExecutor() as executor:
+            if tipo_video == "entrenamiento":
+                logger.info("Iniciando procesamiento de video de entrenamiento")
+                result = await asyncio.get_event_loop().run_in_executor(
+                    executor,
+                    analysis_manager.procesar_video_entrenamiento,
+                    str(video_url),
+                    user_id,
+                    player_position
+                )
+            elif tipo_video == "juego":
+                logger.info("Iniciando procesamiento de video de juego")
+                result = await asyncio.get_event_loop().run_in_executor(
+                    executor,
+                    analysis_manager.procesar_video_juego,
+                    str(video_url),
+                    user_id,
+                    player_position,
+                    game_splits
+                )
+            else:
+                logger.error("Tipo de video no soportado")
+                db.collection("videos").document(video_id).update({
+                    "analysis_status": "error",
+                    "analysis_error": "Tipo de video no soportado"
+                })
+                raise HTTPException(status_code=400, detail="Tipo de video no soportado")
+
+        # Analizar calidad del video
+        video_analysis = await optimizer.analyze_video(str(video_url))
+        if not video_analysis["is_acceptable_quality"]:
+            logger.warning(f"Video de baja calidad detectado: {video_url}")
+            result["quality_warning"] = "La calidad del video puede afectar la precisión del análisis"
 
         metrics = result.get("metrics", {})
         padel_iq = result.get("padel_iq", 0.0)
@@ -285,7 +317,8 @@ async def calculate_padel_iq(data: PadelIQRequest, current_user: UserInDB = Depe
                 **metrics,
                 "consistency_score": consistency_score,
                 "movement_patterns": movement_patterns,
-                "stroke_effectiveness": stroke_effectiveness
+                "stroke_effectiveness": stroke_effectiveness,
+                "video_quality": video_analysis
             },
             "force_category": force_category,
             "force_level": metrics.get("fuerza", 0),
@@ -306,7 +339,8 @@ async def calculate_padel_iq(data: PadelIQRequest, current_user: UserInDB = Depe
             "force_level": metrics.get("fuerza", 0),
             "created_at": firestore.SERVER_TIMESTAMP,
             "analysis_status": "completed",
-            "analysis_completed_at": firestore.SERVER_TIMESTAMP
+            "analysis_completed_at": firestore.SERVER_TIMESTAMP,
+            "video_quality": video_analysis
         }
         db.collection("video_analysis").document(video_id).set(analysis_doc)
         
@@ -317,18 +351,24 @@ async def calculate_padel_iq(data: PadelIQRequest, current_user: UserInDB = Depe
             "analysis_completed_at": firestore.SERVER_TIMESTAMP
         })
 
+        # Guardar en caché
+        await optimizer.cache_result(video_hash, response)
+
         logger.info(f"Análisis guardado en Firestore con video_id: {video_id}")
         response["video_id"] = video_id
         return response
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error calculating Padel IQ: {str(e)}")
         # Actualizar estado del video con el error
-        db.collection("videos").document(video_id).update({
-            "analysis_status": "error",
-            "analysis_error": str(e),
-            "analysis_completed_at": firestore.SERVER_TIMESTAMP
-        })
+        if 'video_id' in locals():
+            db.collection("videos").document(video_id).update({
+                "analysis_status": "error",
+                "analysis_error": str(e),
+                "analysis_completed_at": firestore.SERVER_TIMESTAMP
+            })
         raise HTTPException(status_code=500, detail=f"Error calculating Padel IQ: {str(e)}")
 
 def calculate_consistency_score(metrics: dict) -> float:
