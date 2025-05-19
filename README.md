@@ -181,3 +181,135 @@ player_position: <optional_json_string>
 - Configured via `TF_CPP_MIN_LOG_LEVEL=2` environment variable
 - No impact on video analysis functionality
 - Added test coverage in `tests/test_analysis_manager.py` 
+
+## Deployment Notes (19/05/2025)
+- Fixed `protobuf` conflict by pinning `protobuf>=5.26.1,<6.0dev` in `requirements-ml.txt`.
+- Updated `email-validator` to `2.2.0` to avoid yanked version.
+- Deployed to Cloud Run using Dockerfile with `libmagic1` and `ffmpeg`.
+- CI/CD configured with `cloudbuild.yaml` for automated builds.
+
+### Verification Steps
+
+**Test Dependencies Locally:**
+```bash
+python -m venv test-venv
+source test-venv/bin/activate
+pip install -r requirements-base.txt -r requirements-ml.txt
+# Expected: No conflicts.
+```
+
+**Build Image:**
+```bash
+docker build -t padelyzer .
+docker run -p 8000:8000 padelyzer
+# Expected: Container runs, accessible at http://localhost:8000/docs.
+```
+
+**Test Endpoint:**
+```bash
+curl -X POST http://localhost:8000/api/v1/video/upload \
+-H "Authorization: Bearer <your_jwt_token>" \
+-F "filename=test.mp4" \
+-F "file=@/path/to/test.mp4"
+# Expected: Valid response.
+```
+
+**Deploy:**
+```bash
+docker tag padelyzer us-central1-docker.pkg.dev/pdzr-458820/padelyzer-repo/padelyzer
+docker push us-central1-docker.pkg.dev/pdzr-458820/padelyzer-repo/padelyzer
+gcloud run deploy padelyzer \
+  --image us-central1-docker.pkg.dev/pdzr-458820/padelyzer-repo/padelyzer \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --project pdzr-458820
+```
+
+**Commit:**
+```bash
+git add requirements-base.txt requirements-ml.txt Dockerfile cloudbuild.yaml README.md
+git commit -m "Resolved protobuf conflict and updated deployment setup"
+git push origin main
+```
+
+**Potential Issues:**
+- Persistent Conflict: If protobuf conflict persists, try mediapipe==0.10.14 (older version) or grpcio-status==1.62.2.
+- Build Fails: Check Cloud Build logs:
+```bash
+gcloud builds list --project pdzr-458820
+```
+- Runtime Errors: Test endpoints in the deployed service to catch protobuf-related issues.
+
+**Output:**
+- Stable Docker image without dependency conflicts.
+- Successful deployment to Cloud Run.
+- Updated documentation and CI/CD pipeline. 
+
+## Notas de Despliegue (19/05/2025)
+- Resuelto conflicto de `protobuf` actualizando `mediapipe` a `0.10.14`.
+- Compilado y desplegado con éxito en Cloud Run vía Cloud Build.
+- Probado el endpoint `/api/v1/video/upload` en producción.
+
+### Pasos de Verificación
+
+**Probar Dependencias Localmente:**
+```bash
+rm -rf test-venv
+python -m venv test-venv
+source test-venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements-base.txt -r requirements-ml.txt
+# Esperado: Sin conflictos.
+```
+
+**Compilar Localmente (si Docker está instalado):**
+```bash
+docker build -t padelyzer .
+docker run -p 8000:8000 padelyzer
+curl -X POST http://localhost:8000/api/v1/video/upload \
+  -H "Authorization: Bearer <your_jwt_token>" \
+  -F "filename=test.mp4" \
+  -F "file=@/path/to/test.mp4"
+```
+
+**Cloud Build:**
+```bash
+gcloud builds submit --tag us-central1-docker.pkg.dev/pdzr-458820/padelyzer-repo/padelyzer --project=pdzr-458820 .
+```
+
+**Desplegar:**
+```bash
+gcloud run deploy padelyzer \
+  --image us-central1-docker.pkg.dev/pdzr-458820/padelyzer-repo/padelyzer \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --project pdzr-458820
+```
+
+**Probar Servicio:**
+```bash
+curl -X POST <service-url>/api/v1/video/upload \
+  -H "Authorization: Bearer <your_jwt_token>" \
+  -F "filename=test.mp4" \
+  -F "file=@/path/to/test.mp4"
+```
+
+**Subir Cambios:**
+```bash
+git add requirements-ml.txt README.md
+git commit -m "Corregido conflicto de protobuf con mediapipe 0.10.14 para Cloud Build"
+git push origin main
+```
+
+**Problemas Potenciales:**
+- Conflicto Persistente: Prueba mediapipe==0.10.11 o reduce grpcio-status==1.62.2 en requirements-base.txt.
+- Fallo en Cloud Build: Revisa los logs:
+```bash
+gcloud builds log <build-id>
+```
+- Errores en Tiempo de Ejecución: Prueba los endpoints de Firebase para detectar problemas con protobuf.
+
+**Salida Esperada:**
+- Imagen de Docker estable compilada y desplegada.
+- Servicio de Cloud Run ejecutando Padelyzer.
+- Documentación actualizada. 
