@@ -8,7 +8,6 @@ import logging
 from typing import Optional, Any, Dict, Tuple
 from datetime import datetime
 from google.cloud import firestore as cloud_firestore
-from dotenv import load_dotenv
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -54,8 +53,13 @@ def validate_credentials(cred_dict: Dict[str, Any]) -> bool:
         return False
 
 def initialize_firebase():
+    """
+    Inicializa Firebase usando FIREBASE_CREDENTIALS_PATH desde variables de entorno.
+    
+    Returns:
+        Tuple[firestore.Client, auth.Client]: Clientes de Firestore y Auth
+    """
     try:
-        load_dotenv()
         cred_path = os.getenv('FIREBASE_CREDENTIALS_PATH')
         if not cred_path:
             raise ValueError("FIREBASE_CREDENTIALS_PATH no está configurado en las variables de entorno")
@@ -72,9 +76,16 @@ def initialize_firebase():
             })
         else:
             app = firebase_admin.get_app()
-        return firestore.client(app), auth.Client(app)
-    except Exception as e:
+        
+        db = firestore.client(app)
+        auth_client = auth.Client(app)
+        logger.info("Firebase inicializado correctamente")
+        return db, auth_client
+    except ValueError as e:
         logger.error(f"Error al inicializar Firebase: {str(e)}")
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado al inicializar Firebase: {str(e)}")
         raise
 
 # Inicializar
@@ -175,4 +186,4 @@ def get_user_document(db: Any, user_id: str) -> Optional[dict]:
         return None
     except Exception as e:
         logger.error(f"Error al obtener documento de usuario: {str(e)}")
-        raise 
+        raise
