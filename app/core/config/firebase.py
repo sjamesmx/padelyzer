@@ -2,12 +2,15 @@ import os
 import json
 import time
 import firebase_admin
-from firebase_admin import credentials, initialize_app, storage, firestore, auth
+from firebase_admin import credentials, initialize_app, storage, firestore, auth, _apps
 from app.core.config import settings
 import logging
 from typing import Optional, Any, Dict, Tuple
 from datetime import datetime
 from google.cloud import firestore as cloud_firestore
+from pathlib import Path
+from dotenv import load_dotenv
+from app.services.firestore_mock import get_mock_firestore_client
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -54,53 +57,66 @@ def validate_credentials(cred_dict: Dict[str, Any]) -> bool:
 
 def initialize_firebase():
     """
-    Inicializa Firebase usando FIREBASE_CREDENTIALS_PATH desde variables de entorno.
-    
-    Returns:
-        Tuple[firestore.Client, auth.Client]: Clientes de Firestore y Auth
+    Inicializa la aplicación de Firebase Admin SDK.
     """
     try:
+        # Verificar si Firebase ya está inicializado
+        if _apps:
+            logger.info("Firebase ya está inicializado")
+            return
+            
+        # Obtener la ruta del archivo de credenciales
         cred_path = os.getenv('FIREBASE_CREDENTIALS_PATH')
         if not cred_path:
-            raise ValueError("FIREBASE_CREDENTIALS_PATH no está configurado en las variables de entorno")
+            raise ValueError("FIREBASE_CREDENTIALS_PATH no está configurado")
+            
+        # Verificar que el archivo existe
         if not os.path.exists(cred_path):
-            raise FileNotFoundError(f"El archivo de credenciales no existe: {cred_path}")
-        with open(cred_path, 'r') as f:
-            cred_dict = json.load(f)
-        if not validate_credentials(cred_dict):
-            raise ValueError("Credenciales de Firebase inválidas")
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(cred_dict)
-            app = initialize_app(cred, {
-                'storageBucket': settings.FIREBASE_STORAGE_BUCKET
-            })
-        else:
-            app = firebase_admin.get_app()
-        
-        db = firestore.client(app)
-        auth_client = auth.Client(app)
+            raise FileNotFoundError(f"No se encontró el archivo de credenciales en {cred_path}")
+            
+        # Inicializar Firebase con las credenciales
+        cred = credentials.Certificate(cred_path)
+        initialize_app(cred, {
+            'storageBucket': os.getenv('FIREBASE_STORAGE_BUCKET')
+        })
         logger.info("Firebase inicializado correctamente")
-        return db, auth_client
-    except ValueError as e:
+        
+    except Exception as e:
         logger.error(f"Error al inicializar Firebase: {str(e)}")
         raise
-    except Exception as e:
-        logger.error(f"Error inesperado al inicializar Firebase: {str(e)}")
-        raise
 
-# Inicializar
-db, auth_client = initialize_firebase()
+def get_firestore_client():
+    """Obtiene el cliente de Firestore."""
+    if not _apps:
+        initialize_firebase()
+    return firestore.client()
 
-def get_firebase_client() -> Tuple[firestore.Client, auth.Client]:
+def get_storage_client():
+    """Obtiene el cliente de Storage."""
+    if not _apps:
+        initialize_firebase()
+    return storage.bucket()
+
+def get_auth_client():
+    """Obtiene el cliente de Auth."""
+    if not _apps:
+        initialize_firebase()
+    return auth
+
+def get_firebase_client() -> Tuple[firestore.Client, auth.Client, Any]:
     """
-    Obtiene las instancias de los clientes de Firestore y Auth.
+    Obtiene los clientes de Firestore, Auth y Storage.
     
     Returns:
-        Tuple[firestore.Client, auth.Client]: Tupla con los clientes de Firestore y Auth
+        Tuple[firestore.Client, auth.Client, Any]: Clientes de Firestore, Auth y Storage
     """
     try:
-        app = firebase_admin.get_app()
-        return firestore.client(app), auth.Client(app)
+        if not _apps:
+            initialize_firebase()
+        db = firestore.client()
+        auth_client = auth.Client()
+        storage_bucket = storage.bucket()
+        return db, auth_client, storage_bucket
     except Exception as e:
         logger.error(f"Error al obtener clientes de Firebase: {str(e)}")
         raise
@@ -167,23 +183,19 @@ def update_user_document(db: Any, user_id: str, user_data: dict) -> None:
         logger.error(f"Error al actualizar documento de usuario: {str(e)}")
         raise
 
-def get_user_document(db: Any, user_id: str) -> Optional[dict]:
+def get_user_document(user_id: str) -> firestore.DocumentReference:
     """
-    Obtiene un documento de usuario de Firestore.
+    Obtiene una referencia al documento del usuario en Firestore.
     
     Args:
-        db: Cliente de Firestore
         user_id: ID del usuario
         
     Returns:
-        Optional[dict]: Datos del usuario o None si no existe
+        firestore.DocumentReference: Referencia al documento del usuario
     """
     try:
-        user_ref = db.collection('users').document(user_id)
-        user_doc = user_ref.get()
-        if user_doc.exists:
-            return user_doc.to_dict()
-        return None
+        db, _, _ = get_firebase_client()
+        return db.collection('users').document(user_id)
     except Exception as e:
         logger.error(f"Error al obtener documento de usuario: {str(e)}")
         raise

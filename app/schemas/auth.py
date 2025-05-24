@@ -1,7 +1,7 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, constr
 from typing import Optional
 import re
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 
 class Token(BaseModel):
     """Respuesta con token de acceso JWT."""
@@ -92,4 +92,20 @@ class PasswordResetConfirm(BaseModel):
             raise ValueError('Password must contain at least one lowercase letter')
         if not any(c.isdigit() for c in v):
             raise ValueError('Password must contain at least one number')
-        return v 
+        return v
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: constr(min_length=8)
+    display_name: Optional[str] = None
+
+class UserResponse(BaseModel):
+    uid: str
+    email: str
+    display_name: Optional[str] = None
+    photo_url: Optional[str] = None
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse 
