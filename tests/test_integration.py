@@ -1,124 +1,165 @@
 import pytest
 from fastapi.testclient import TestClient
-from main import app
-from services.analysis_manager import AnalysisManager
-from services.video_processor import VideoProcessor
-from services.player_detector import PlayerDetector
+from app.main import app
+from app.models.padel_iq import PadelIQRequest
 import os
+import cv2
+import numpy as np
+import sys
 
 client = TestClient(app)
 
-def test_analyze_training_video():
-    """Test de integración para análisis de video de entrenamiento."""
-    # Preparar datos de prueba
-    video_url = "test_video.mp4"
-    player_position = {
-        "x": 0,
-        "y": 0,
-        "width": 100,
-        "height": 200
-    }
+def create_test_video(filename: str, duration: int = 5, fps: int = 30):
+    """Crea un video de prueba válido."""
+    # Crear un video con frames negros
+    height, width = 480, 640
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(filename, fourcc, fps, (width, height))
+    
+    for _ in range(duration * fps):
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        out.write(frame)
+    
+    out.release()
 
-    # Llamar al endpoint
+def test_analyze_training_video():
+    """Test para el análisis de video de entrenamiento."""
+    video_url = "https://firebasestorage.googleapis.com/v0/b/pdzr-458820.firebasestorage.app/o/lety.mp4?alt=media&token=4e7c5d33-423b-4d0d-8b6f-5699d6604296"
     response = client.post(
-        "/api/v1/padel-iq/analyze/training",
+        "/api/v1/padel-iq/calculate",
         json={
+            "user_id": "test_user",
             "video_url": video_url,
-            "player_position": player_position
+            "tipo_video": "entrenamiento",
+            "player_position": {"side": "right", "zone": "back"}
         }
     )
-
-    # Verificar respuesta
+    print("Status:", response.status_code)
+    print("Body:", response.text)
+    assert False, response.text
+    sys.stdout.flush()
     assert response.status_code == 200
-    data = response.json()
-    assert "task_id" in data
-    assert data["status"] == "processing"
-
-    # Verificar estado de la tarea
-    task_id = data["task_id"]
-    response = client.get(f"/api/v1/padel-iq/status/{task_id}")
-    assert response.status_code == 200
+    result = response.json()
+    assert "analysis_id" in result
+    assert "task_id" in result
+    assert result["status"] == "processing"
+    print(result)
 
 def test_analyze_game_video():
-    """Test de integración para análisis de video de juego."""
-    # Preparar datos de prueba
-    video_url = "test_game.mp4"
-    player_position = {
-        "x": 0,
-        "y": 0,
-        "width": 100,
-        "height": 200
-    }
-
-    # Llamar al endpoint
+    """Test para el análisis de video de juego."""
+    video_url = "https://firebasestorage.googleapis.com/v0/b/pdzr-458820.firebasestorage.app/o/lety.mp4?alt=media&token=4e7c5d33-423b-4d0d-8b6f-5699d6604296"
     response = client.post(
-        "/api/v1/padel-iq/analyze/game",
+        "/api/v1/padel-iq/calculate",
         json={
+            "user_id": "test_user",
             "video_url": video_url,
-            "player_position": player_position
+            "tipo_video": "juego",
+            "player_position": {"side": "right", "zone": "back"}
         }
     )
-
-    # Verificar respuesta
+    print("Status:", response.status_code)
+    print("Body:", response.text)
+    assert False, response.text
+    sys.stdout.flush()
     assert response.status_code == 200
-    data = response.json()
-    assert "task_id" in data
-    assert data["status"] == "processing"
-
-    # Verificar estado de la tarea
-    task_id = data["task_id"]
-    response = client.get(f"/api/v1/padel-iq/status/{task_id}")
-    assert response.status_code == 200
+    result = response.json()
+    assert "analysis_id" in result
+    assert "task_id" in result
+    assert result["status"] == "processing"
+    print(result)
 
 def test_get_user_history():
-    """Test de integración para obtener historial de usuario."""
-    # Llamar al endpoint
-    response = client.get("/api/v1/padel-iq/history/test_user")
-
-    # Verificar respuesta
+    """Test para obtener el historial de análisis de un usuario."""
+    user_id = "test_user_123"
+    response = client.get(f"/api/v1/padel-iq/history/{user_id}")
     assert response.status_code == 200
-    data = response.json()
-    assert "history" in data
-    assert isinstance(data["history"], list)
+    result = response.json()
+    assert "history" in result
+    assert isinstance(result["history"], list)
 
 def test_video_processing_flow():
-    """Test de integración para el flujo completo de procesamiento de video."""
-    # Inicializar componentes
-    manager = AnalysisManager()
+    """Test para el flujo completo de procesamiento de video."""
+    from app.services.video_processor import VideoProcessor
+    from app.services.player_detector import PlayerDetector
+    
     processor = VideoProcessor()
     detector = PlayerDetector()
-
-    # Procesar video
+    
+    # Crear un video de prueba válido
     video_url = "test_video.mp4"
-    frames = processor.process_video(video_url)
-    assert len(frames) > 0
-
-    # Detectar jugador
-    player_position = detector.detect_player(frames[0])
-    assert "x" in player_position
-    assert "y" in player_position
-
-    # Analizar video
-    result = manager.analyze_training_video(video_url, player_position)
-    assert "padel_iq" in result
-    assert "metrics" in result
-    assert "strokes" in result
+    create_test_video(video_url)
+    
+    try:
+        frames = processor.process_video(video_url)
+        assert len(frames) > 0
+        
+        position = detector.detect_player(frames[0])
+        assert isinstance(position, dict)
+        assert "side" in position
+        assert "zone" in position
+    finally:
+        if os.path.exists(video_url):
+            os.remove(video_url)
 
 def test_error_handling():
-    """Test de integración para manejo de errores."""
-    # Test video inválido
+    """Test para el manejo de errores."""
+    # Test con datos inválidos
+    data = {
+        "user_id": "test_user_123",
+        "video_url": "invalid_url",
+        "tipo_video": "invalid_type"
+    }
+    
+    response = client.post("/api/v1/padel-iq/calculate", json=data)
+    print("Status:", response.status_code)
+    print("Body:", response.text)
+    assert False, response.text
+    sys.stdout.flush()
+    assert response.status_code == 422  # Unprocessable Entity
+    
+    # Test con video inexistente
+    data = {
+        "user_id": "test_user_123",
+        "video_url": "https://example.com/nonexistent.mp4",
+        "tipo_video": "entrenamiento"
+    }
+    
+    response = client.post("/api/v1/padel-iq/calculate", json=data)
+    print("Status:", response.status_code)
+    print("Body:", response.text)
+    assert False, response.text
+    sys.stdout.flush()
+    assert response.status_code == 500  # Internal Server Error
+
+# Test para verificar el error 422
+def test_error_handling_422():
     response = client.post(
-        "/api/v1/padel-iq/analyze/training",
+        "/api/v1/padel-iq/calculate",
         json={
-            "video_url": "invalid_video.mp4"
+            "user_id": "test_user",
+            "video_url": "https://firebasestorage.googleapis.com/v0/b/pdzr-458820.firebasestorage.app/o/lety.mp4?alt=media&token=4e7c5d33-423b-4d0d-8b6f-5699d6604296",
+            "tipo_video": "entrenamiento",
+            "player_position": {"side": "right", "zone": "back"}
         }
     )
-    assert response.status_code == 500
+    print("Status:", response.status_code)
+    print("Body:", response.text)
+    assert False, response.text
+    sys.stdout.flush()
+    assert response.status_code == 422  # Unprocessable Entity
 
-    # Test task_id inválido
-    response = client.get("/api/v1/padel-iq/status/invalid_task_id")
-    assert response.status_code == 500
-
-    # Test usuario inválido
-    response = client.get("/api/v1/padel-iq/history/invalid_user")
-    assert response.status_code == 500 
+# Test para verificar el error 500
+def test_error_handling_500():
+    response = client.post(
+        "/api/v1/padel-iq/calculate",
+        json={
+            "user_id": "test_user",
+            "video_url": "https://example.com/nonexistent.mp4",
+            "tipo_video": "entrenamiento"
+        }
+    )
+    print("Status:", response.status_code)
+    print("Body:", response.text)
+    assert False, response.text
+    sys.stdout.flush()
+    assert response.status_code == 500  # Internal Server Error 

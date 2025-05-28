@@ -8,6 +8,7 @@ import numpy as np
 from datetime import datetime
 from firebase_admin import firestore, initialize_app, _apps
 from config.firestore_schema import validate_document, COLLECTIONS
+from typing import Dict, Any
 
 def get_db():
     return firestore.client()
@@ -141,7 +142,62 @@ def create_test_video(output_path='test_videos', filename='test_video.mp4', reso
     
     out.release()
     return video_path
+"""
+Inicialización de datos de prueba para Padelyzer.
 
+Este módulo proporciona funciones y constantes para configurar
+el entorno de prueba con datos predeterminados.
+"""
+
+import os
+import tempfile
+import uuid
+from datetime import datetime
+
+# URLs y endpoints para pruebas
+BASE_URL = "http://localhost:8000/api/v1"
+API_VERSION = "v1"
+
+# Datos de usuario de prueba
+TEST_USER_EMAIL = f"test_{uuid.uuid4()}@example.com"
+TEST_USER_PASSWORD = "Test123!"
+TEST_USER_NAME = f"Test User {datetime.now().strftime('%Y%m%d%H%M%S')}"
+TEST_USER_LEVEL = "intermedio"
+TEST_USER_POSITION = "derecha"
+
+# Ruta del video de prueba
+TEST_VIDEO_PATH = os.path.join(os.path.dirname(__file__), "resources", "test_video.mp4")
+
+def create_test_video(size_kb=100):
+    """
+    Crea un archivo de video temporal para pruebas.
+    
+    Args:
+        size_kb: Tamaño del archivo en KB (por defecto 100KB)
+        
+    Returns:
+        Ruta al archivo temporal creado
+    """
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as temp_file:
+        # Crear contenido dummy del tamaño especificado
+        dummy_content = b"0" * (size_kb * 1024)
+        temp_file.write(dummy_content)
+        temp_file.flush()
+        return temp_file.name
+
+def cleanup_test_files(files):
+    """
+    Elimina archivos temporales de prueba.
+    
+    Args:
+        files: Lista de rutas de archivos a eliminar
+    """
+    for file in files:
+        try:
+            if os.path.exists(file):
+                os.unlink(file)
+        except Exception as e:
+            print(f"Error al limpiar archivo {file}: {str(e)}")
 def create_test_videos():
     """Crea videos de prueba para entrenamiento y partido."""
     videos = {
@@ -156,4 +212,48 @@ def create_test_videos():
             duration=30
         )
     }
-    return videos 
+    return videos
+
+def get_test_user_data() -> Dict[str, Any]:
+    """Retorna datos de prueba para un usuario."""
+    return {
+        "id": "test_user_123",
+        "email": "test@example.com",
+        "name": "Test User",
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow(),
+        "is_active": True,
+        "email_verified": True,
+        "preferences": {
+            "notifications": True,
+            "email_notifications": True,
+            "language": "es",
+            "timezone": "UTC"
+        }
+    }
+
+def get_test_video_data() -> Dict[str, Any]:
+    """Retorna datos de prueba para un video."""
+    return {
+        "id": "test_video_123",
+        "user_id": "test_user_123",
+        "filename": "test_video.mp4",
+        "video_type": "training",
+        "status": "pending",
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow()
+    }
+
+def get_test_padel_iq_data() -> Dict[str, Any]:
+    """Retorna datos de prueba para Padel IQ."""
+    return {
+        "id": "test_iq_123",
+        "user_id": "test_user_123",
+        "score": 85,
+        "metrics": {
+            "technique": 80,
+            "tactics": 85,
+            "physical": 90
+        },
+        "created_at": datetime.utcnow()
+    } 

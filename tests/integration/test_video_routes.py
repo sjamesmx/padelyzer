@@ -24,7 +24,7 @@ def mock_firebase():
 def mock_video_service():
     with patch('app.services.video_service.upload_video') as mock:
         mock.return_value = {
-            'url': 'https://firebasestorage.googleapis.com/v0/b/pdzr-458820.appspot.com/o/videos/test.mp4',
+            'url': 'https://firebasestorage.googleapis.com/v0/b/pdzr-458820.firebasestorage.app/o/videos/test.mp4',
             'storage_path': 'videos/user123/test.mp4'
         }
         yield mock

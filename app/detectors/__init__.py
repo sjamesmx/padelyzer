@@ -1,0 +1,1 @@
+# Paquete de detectores (YOLO, Detectron2, OpenPose, etc.) 

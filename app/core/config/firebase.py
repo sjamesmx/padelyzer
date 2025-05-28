@@ -1,201 +1,153 @@
+"""
+Configuración unificada de Firebase para la aplicación Padelyzer.
+
+Este módulo es la única fuente de verdad para la configuración de Firebase
+y proporciona funciones para inicializar y obtener clientes de Firebase.
+"""
+
 import os
-import json
-import time
-import firebase_admin
-from firebase_admin import credentials, initialize_app, storage, firestore, auth, _apps
-from app.core.config import settings
 import logging
-from typing import Optional, Any, Dict, Tuple
-from datetime import datetime
-from google.cloud import firestore as cloud_firestore
+from typing import Dict, Any, Optional, Tuple
+import firebase_admin
+from firebase_admin import credentials, firestore, storage, auth
+from functools import lru_cache
 from pathlib import Path
-from dotenv import load_dotenv
-from app.services.firestore_mock import get_mock_firestore_client
+from datetime import datetime
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def validate_credentials(cred_dict: Dict[str, Any]) -> bool:
-    """
-    Valida que las credenciales tengan todos los campos requeridos y el formato correcto.
-    
-    Args:
-        cred_dict: Diccionario con las credenciales
-        
-    Returns:
-        bool: True si las credenciales son válidas, False en caso contrario
-    """
-    required_fields = {
-        "type": "service_account",
-        "project_id": str,
-        "private_key_id": str,
-        "private_key": str,
-        "client_email": str,
-        "client_id": str,
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": str
-    }
-    
-    try:
-        for field, expected_type in required_fields.items():
-            if field not in cred_dict:
-                logger.error(f"Campo requerido faltante: {field}")
-                return False
-            if isinstance(expected_type, type) and not isinstance(cred_dict[field], expected_type):
-                logger.error(f"Tipo incorrecto para {field}: esperado {expected_type}, obtenido {type(cred_dict[field])}")
-                return False
-            if isinstance(expected_type, str) and cred_dict[field] != expected_type:
-                logger.error(f"Valor incorrecto para {field}: esperado {expected_type}, obtenido {cred_dict[field]}")
-                return False
-        return True
-    except Exception as e:
-        logger.error(f"Error al validar credenciales: {str(e)}")
-        return False
+class FirebaseConfigError(Exception):
+    """Excepción personalizada para errores de configuración de Firebase."""
+    pass
 
-def initialize_firebase():
+class FirebaseInitializationError(Exception):
+    """Excepción personalizada para errores de inicialización de Firebase."""
+    pass
+
+@lru_cache()
+def get_firebase_credentials() -> credentials.Certificate:
+    """
+    Obtiene las credenciales de Firebase desde el archivo de configuración.
+    Usa lru_cache para evitar leer el archivo múltiples veces.
+    
+    Returns:
+        credentials.Certificate: Credenciales de Firebase
+        
+    Raises:
+        FirebaseConfigError: Si hay un error al cargar las credenciales
+    """
+    try:
+        cred_path = os.getenv('FIREBASE_CREDENTIALS_PATH')
+        if not cred_path:
+            raise FirebaseConfigError("FIREBASE_CREDENTIALS_PATH no está configurado")
+            
+        if not os.path.exists(cred_path):
+            raise FirebaseConfigError(f"No se encontró el archivo de credenciales en {cred_path}")
+            
+        return credentials.Certificate(cred_path)
+    except Exception as e:
+        logger.error(f"Error al cargar credenciales de Firebase: {str(e)}")
+        raise FirebaseConfigError(f"Error al cargar credenciales: {str(e)}")
+
+def initialize_firebase() -> None:
     """
     Inicializa la aplicación de Firebase Admin SDK.
+    
+    Raises:
+        FirebaseInitializationError: Si hay un error al inicializar Firebase
     """
     try:
         # Verificar si Firebase ya está inicializado
-        if _apps:
+        if firebase_admin._apps:
             logger.info("Firebase ya está inicializado")
             return
             
-        # Obtener la ruta del archivo de credenciales
-        cred_path = os.getenv('FIREBASE_CREDENTIALS_PATH')
-        if not cred_path:
-            raise ValueError("FIREBASE_CREDENTIALS_PATH no está configurado")
-            
-        # Verificar que el archivo existe
-        if not os.path.exists(cred_path):
-            raise FileNotFoundError(f"No se encontró el archivo de credenciales en {cred_path}")
-            
-        # Inicializar Firebase con las credenciales
-        cred = credentials.Certificate(cred_path)
-        initialize_app(cred, {
-            'storageBucket': os.getenv('FIREBASE_STORAGE_BUCKET')
-        })
+        # Obtener credenciales
+        cred = get_firebase_credentials()
+        
+        # Configurar opciones de inicialización
+        options = {
+            'storageBucket': os.getenv('FIREBASE_STORAGE_BUCKET', 'pdzr-458820.firebasestorage.app')
+        }
+        
+        # Inicializar Firebase
+        firebase_admin.initialize_app(cred, options)
         logger.info("Firebase inicializado correctamente")
         
     except Exception as e:
         logger.error(f"Error al inicializar Firebase: {str(e)}")
-        raise
+        raise FirebaseInitializationError(f"Error al inicializar Firebase: {str(e)}")
 
-def get_firestore_client():
-    """Obtiene el cliente de Firestore."""
-    if not _apps:
-        initialize_firebase()
-    return firestore.client()
-
-def get_storage_client():
-    """Obtiene el cliente de Storage."""
-    if not _apps:
-        initialize_firebase()
-    return storage.bucket()
-
-def get_auth_client():
-    """Obtiene el cliente de Auth."""
-    if not _apps:
-        initialize_firebase()
-    return auth
-
-def get_firebase_client() -> Tuple[firestore.Client, auth.Client, Any]:
+@lru_cache()
+def get_firebase_clients() -> Dict[str, Any]:
     """
-    Obtiene los clientes de Firestore, Auth y Storage.
+    Obtiene los clientes de Firebase (Firestore, Auth, Storage).
+    Usa lru_cache para evitar múltiples inicializaciones.
     
     Returns:
-        Tuple[firestore.Client, auth.Client, Any]: Clientes de Firestore, Auth y Storage
+        Dict[str, Any]: Diccionario con los clientes de Firebase
+        
+    Raises:
+        FirebaseInitializationError: Si hay un error al obtener los clientes
     """
     try:
-        if not _apps:
+        if not firebase_admin._apps:
             initialize_firebase()
-        db = firestore.client()
-        auth_client = auth.Client()
-        storage_bucket = storage.bucket()
-        return db, auth_client, storage_bucket
+            
+        # Obtener la aplicación de Firebase
+        app = firebase_admin.get_app()
+            
+        return {
+            'db': firestore.client(),
+            'auth': auth.Client(app),
+            'storage': storage.bucket()
+        }
     except Exception as e:
         logger.error(f"Error al obtener clientes de Firebase: {str(e)}")
-        raise
+        raise FirebaseInitializationError(f"Error al obtener clientes: {str(e)}")
 
-def get_storage_bucket() -> Any:
+def verify_firebase_connection() -> bool:
     """
-    Obtiene el bucket de Firebase Storage.
+    Verifica la conexión con Firebase realizando una operación simple.
     
     Returns:
-        Any: Bucket de Firebase Storage.
+        bool: True si la conexión es exitosa, False en caso contrario
     """
     try:
-        app = firebase_admin.get_app()
-        bucket = storage.bucket()
-        if bucket is None:
-            logger.error("El bucket de Storage es None")
-            raise ValueError("El bucket de Storage no se pudo inicializar")
-        logger.info("Bucket de Storage obtenido correctamente")
-        return bucket
+        clients = get_firebase_clients()
+        # Intentar una operación simple en Firestore
+        clients['db'].collection('_health_check').document('test').get()
+        return True
     except Exception as e:
-        logger.error(f"Error al obtener bucket de Storage: {str(e)}")
-        raise
+        logger.error(f"Error al verificar conexión con Firebase: {str(e)}")
+        return False
 
-def create_user_document(db: Any, user_id: str, user_data: dict) -> str:
+def get_health_status() -> Dict[str, Any]:
     """
-    Crea un documento de usuario en Firestore.
+    Obtiene el estado de salud de la conexión con Firebase.
     
-    Args:
-        db: Cliente de Firestore
-        user_id: ID del usuario
-        user_data: Datos del usuario
+    Returns:
+        Dict[str, Any]: Diccionario con el estado de salud
+    """
+    try:
+        clients = get_firebase_clients()
+        firestore_ok = verify_firebase_connection()
         
-    Returns:
-        str: ID del documento creado
-    """
-    try:
-        user_ref = db.collection('users').document(user_id)
-        user_data.update({
-            'created_at': datetime.utcnow(),
-            'updated_at': datetime.utcnow()
-        })
-        user_ref.set(user_data)
-        return user_id
+        return {
+            'status': 'healthy' if firestore_ok else 'unhealthy',
+            'components': {
+                'firestore': 'connected' if firestore_ok else 'disconnected',
+                'auth': 'initialized' if clients['auth'] else 'not_initialized',
+                'storage': 'initialized' if clients['storage'] else 'not_initialized'
+            },
+            'timestamp': datetime.utcnow().isoformat()
+        }
     except Exception as e:
-        logger.error(f"Error al crear documento de usuario: {str(e)}")
-        raise
-
-def update_user_document(db: Any, user_id: str, user_data: dict) -> None:
-    """
-    Actualiza un documento de usuario en Firestore.
-    
-    Args:
-        db: Cliente de Firestore
-        user_id: ID del usuario
-        user_data: Datos del usuario a actualizar
-    """
-    try:
-        user_ref = db.collection('users').document(user_id)
-        user_data.update({
-            'updated_at': datetime.utcnow()
-        })
-        user_ref.update(user_data)
-    except Exception as e:
-        logger.error(f"Error al actualizar documento de usuario: {str(e)}")
-        raise
-
-def get_user_document(user_id: str) -> firestore.DocumentReference:
-    """
-    Obtiene una referencia al documento del usuario en Firestore.
-    
-    Args:
-        user_id: ID del usuario
-        
-    Returns:
-        firestore.DocumentReference: Referencia al documento del usuario
-    """
-    try:
-        db, _, _ = get_firebase_client()
-        return db.collection('users').document(user_id)
-    except Exception as e:
-        logger.error(f"Error al obtener documento de usuario: {str(e)}")
-        raise
+        logger.error(f"Error al obtener estado de salud: {str(e)}")
+        return {
+            'status': 'error',
+            'error': str(e),
+            'timestamp': datetime.utcnow().isoformat()
+        }

@@ -1,0 +1,47 @@
+name: CI Padelyzer
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'feature/*'
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v3
+
+      - name: Configurar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias principales
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt -r requirements-ml.txt
+
+      - name: Linting con flake8
+        run: |
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Formateo con black (modo check)
+        run: |
+          black --check .
+
+      - name: Ejecutar tests
+        run: |
+          pytest --maxfail=3 --disable-warnings -q
+
+      - name: Chequeo de seguridad de dependencias
+        run: |
+          pip install safety
+          safety check || true 

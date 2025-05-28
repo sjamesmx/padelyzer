@@ -1,26 +1,62 @@
-fastapi==0.104.1
-uvicorn==0.24.0
-python-multipart==0.0.6
+# API y Framework
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic==2.4.2
+pydantic-settings==2.2.1
+python-dotenv
+email-validator==2.1.0.post1
+
+# Autenticación y Seguridad
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
-pydantic==2.4.2
-pydantic-settings==2.0.3
-firebase-admin==6.2.0
-opencv-python==4.8.1.78
-mediapipe==0.10.18
-tensorflow==2.19.0
-numpy==1.26.1
+firebase-admin
+
+# Base de Datos y Caché
+
+# Procesamiento de Archivos
+python-magic==0.4.27
+aiohttp==3.9.1
+
+# Utilidades
+tenacity==8.2.3
+httpx==0.25.1
+
+# Dependencias de Machine Learning
+numpy
 pandas==2.1.2
 scikit-learn==1.3.2
-celery==5.3.4
-redis==5.0.1
-pytest==7.4.3
-pytest-asyncio==0.21.1
-httpx==0.25.1
-python-dotenv==1.0.0
-ultralytics==8.0.196
+opencv-python-headless
+mediapipe==0.10.18
+tensorflow==2.19.0
+ultralytics>=8.2.0
 deep-sort-realtime==1.3.2
-aiohttp==3.9.1
-asyncio==3.4.3
-tenacity==8.2.3
-python-magic==0.4.27
+torch==2.5.0
+torchvision==0.20.0
+
+# Procesamiento de Video
+moviepy==1.0.3
+av==10.0.0
+
+# Additional dependencies
+requests
+
+# --- OpenPose (requiere instalación manual en la mayoría de sistemas, pero agregamos pyopenpose si está disponible)
+# pyopenpose @ git+https://github.com/CMU-Perceptual-Computing-Lab/openpose.git#subdirectory=python
+
+# --- MMPose y dependencias
+# mmpose==1.3.0
+# mmdet==2.28.2
+# mmcv-full==1.7.1
+# mmcv==2.0.0
+# xtcocotools
+
+# --- Otros requisitos para wrappers y procesamiento
+opencv-python
+mediapipe
+numpy
+
+# Google Cloud
+google-cloud-storage
+google-cloud-firestore
+google-cloud-tasks

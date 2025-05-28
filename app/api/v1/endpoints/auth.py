@@ -1,326 +1,196 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from app.core.security import create_access_token, create_refresh_token, verify_password, get_password_hash
-from app.schemas.user import User, UserCreate, Token
-from app.schemas.auth import (
-    TokenRefreshRequest, TokenRefreshResponse, LogoutRequest, ForgotPasswordRequest, ResetPasswordRequest,
-    EmailVerificationRequest, ResendVerificationRequest,
-    UserRegistration,
-    UserLogin,
-    TokenRefresh,
-    PasswordReset,
-    PasswordResetConfirm
-)
-from app.services.firebase import get_firebase_client
-from app.services.email import email_service
-from datetime import datetime, timedelta
-import logging
-from uuid import uuid4
+from fastapi import APIRouter, HTTPException, status, Body, Depends, Request
+from pydantic import BaseModel, Field
+from datetime import datetime, timedelta, timezone
+import jwt
 from app.core.config import settings
-from app.core.security.exceptions import AuthenticationError
-from app.core.config.firebase import db
+from app.services.auth_service import AuthService, validate_password
+from app.services.email import email_service
+from app.core.config.firebase import get_firebase_clients
+from app.schemas.auth import ForgotPasswordRequest, ResetPasswordRequest, TokenResponse, UserResponse
+from uuid import uuid4
+import firebase_admin
+from firebase_admin import auth as firebase_auth
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# Constantes para límites de envío de emails
-MAX_VERIFICATION_ATTEMPTS = 3
-VERIFICATION_GRACE_PERIOD_DAYS = 3
+class UserCreate(BaseModel):
+    email: str
+    password: str
+    full_name: str
+    name: str
 
-@router.post("/register", response_model=User, summary="Registro de usuario", tags=["auth"])
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class PreferencesOnboarding(BaseModel):
+    nivel_juego: str = Field(..., description="Nivel de juego: principiante, intermedio, avanzado")
+    lado_dominante: str = Field(..., description="Lado dominante: izquierda, derecha, ambas")
+    estilo_juego: str = Field(None, description="Estilo de juego (opcional)")
+    frecuencia_juego: int = Field(None, description="Frecuencia de juego semanal (opcional)")
+    objetivos: str = Field(None, description="Objetivos del usuario (opcional)")
+
+class ProfileOnboarding(BaseModel):
+    edad: int = Field(None, description="Edad (opcional)")
+    genero: str = Field(None, description="Género (opcional)")
+    ubicacion: str = Field(None, description="Ubicación (opcional)")
+    foto_perfil: str = Field(None, description="URL de la foto de perfil (opcional)")
+
+@router.post("/register", response_model=TokenResponse, summary="Registro de usuario", tags=["auth"])
 async def register_user(user_data: UserCreate):
     """
-    Registra un nuevo usuario en el sistema.
-    
-    - **email**: Email válido del usuario
-    - **password**: Contraseña que cumple con los requisitos de seguridad
-    - **name**: Nombre completo del usuario
-    - **nivel**: Nivel de juego
-    - **posicion_preferida**: Posición preferida
+    Registra un nuevo usuario y lo autentica automáticamente.
     """
-    try:
-        # Verificar si el email ya está registrado
-        user_ref = db.collection('users').where('email', '==', user_data.email).get()
-        if user_ref:
-            raise AuthenticationError("El email ya está registrado")
-        
-        # Crear nuevo usuario
-        now = datetime.utcnow()
-        user_dict = user_data.dict()
-        user_dict.update({
-            'password': get_password_hash(user_dict['password']),
-            'created_at': now,
-            'updated_at': now,
-            'fecha_registro': now,
-            'is_active': True,
-            'email_verified': False,
-            'preferences': {
-                'notifications': True,
-                'email_notifications': True,
-                'language': 'es',
-                'timezone': 'UTC'
-            },
-            'stats': {
-                'matches_played': 0,
-                'matches_won': 0,
-                'total_points': 0
-            },
-            'achievements': [],
-            'blocked_users': [],
-            'clubs': [],
-            'availability': [],
-            'onboarding_status': 'pending'
-        })
-        
-        # Guardar en Firestore
-        user_ref = db.collection('users').document()
-        user_dict['id'] = user_ref.id
-        user_ref.set(user_dict)
-        
-        return User(**user_dict)
-    except Exception as e:
-        logger.error(f"Error al registrar usuario: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
+    user, error = await AuthService.register_user(user_data)
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    # Login automático
+    token_data, login_error = await AuthService.login_user(user_data.email, user_data.password)
+    if login_error:
+        raise HTTPException(status_code=400, detail=login_error)
+    return token_data
 
-@router.post("/verify-email", summary="Verificar email", tags=["auth"])
-async def verify_email(request: EmailVerificationRequest):
+@router.post("/login", response_model=TokenResponse, summary="Inicio de sesión", tags=["auth"])
+async def login(user_data: UserLogin, request: Request):
     """
-    Verifica el email de un usuario usando el token de verificación.
-    - En desarrollo, también acepta el ID del usuario como token.
+    Inicia sesión en el sistema usando Firebase Auth.
     """
-    try:
-        db, _ = get_firebase_client()
-        
-        # En desarrollo, permitir usar el ID del usuario como token
-        if settings.ENVIRONMENT == "development":
-            user_doc = db.collection("users").document(request.token).get()
-            if user_doc.exists:
-                user_doc.reference.update({
-                    "email_verified": True,
-                    "updated_at": datetime.utcnow()
-                })
-                return {"detail": "Email verificado correctamente (modo desarrollo)"}
-        
-        # Verificación normal con token
-        token_doc = db.collection("email_verification_tokens").document(request.token).get()
-        if not token_doc.exists:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Token de verificación inválido"
-            )
-            
-        token_data = token_doc.to_dict()
-        if token_data.get("used"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Token ya utilizado"
-            )
-            
-        if datetime.utcnow() > token_data["expires_at"].replace(tzinfo=None):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Token expirado"
-            )
-            
-        user_email = token_data["user_email"]
-        users_ref = db.collection('users')
-        query = users_ref.where('email', '==', user_email)
-        results = query.get()
-        
-        if not results:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Usuario no encontrado"
-            )
-            
-        user_ref = results[0].reference
-        user_ref.update({
-            "email_verified": True,
-            "updated_at": datetime.utcnow()
-        })
-        token_doc.reference.set({"used": True}, merge=True)
-        
-        return {"detail": "Email verificado correctamente"}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error al verificar email: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al verificar email"
-        )
+    ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    token_data, login_error = await AuthService.login_user(user_data.email, user_data.password, ip, user_agent)
+    if login_error:
+        raise HTTPException(status_code=401, detail=login_error)
+    return token_data
 
-@router.post("/resend-verification", summary="Reenviar email de verificación", tags=["auth"])
-async def resend_verification(request: ResendVerificationRequest):
-    """
-    Reenvía el email de verificación a un usuario.
-    - Limita a 3 intentos en 3 días.
-    """
-    try:
-        db = get_firebase_client()
-        users_ref = db.collection('users')
-        query = users_ref.where('email', '==', request.email)
-        results = query.get()
-        
-        if not results:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Usuario no encontrado"
-            )
-            
-        user_doc = results[0]
-        user_data = user_doc.to_dict()
-        
-        if user_data.get("email_verified"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email ya verificado"
-            )
-            
-        # Verificar límites de envío
-        attempts = user_data.get("verification_attempts", 0)
-        last_attempt = user_data.get("last_verification_attempt")
-        
-        if last_attempt:
-            last_attempt = last_attempt.replace(tzinfo=None)
-            grace_period_end = last_attempt + timedelta(days=VERIFICATION_GRACE_PERIOD_DAYS)
-            
-            if attempts >= MAX_VERIFICATION_ATTEMPTS and datetime.utcnow() < grace_period_end:
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail=f"Límite de intentos alcanzado. Por favor, espera hasta {grace_period_end.strftime('%Y-%m-%d %H:%M:%S')}"
-                )
-            
-            # Resetear contador si pasó el período de gracia
-            if datetime.utcnow() >= grace_period_end:
-                attempts = 0
-        
-        # Generar nuevo token de verificación
-        verification_token = str(uuid4())
-        expires_at = datetime.utcnow() + timedelta(hours=24)
-        db.collection("email_verification_tokens").document(verification_token).set({
-            "user_email": request.email,
-            "expires_at": expires_at,
-            "used": False
-        })
-        
-        # Actualizar contador de intentos
-        user_doc.reference.update({
-            "verification_attempts": attempts + 1,
-            "last_verification_attempt": datetime.now()
-        })
-        
-        # Enviar email de verificación
-        if not email_service.send_verification_email(request.email, verification_token):
-            logger.error(f"Error al enviar email de verificación a {request.email}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Error al enviar email de verificación"
-            )
-        
-        return {"detail": "Se ha enviado un nuevo email de verificación"}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error al reenviar verificación: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al reenviar verificación"
-        )
-
-@router.post("/login", response_model=dict, summary="Inicio de sesión", tags=["auth"])
-async def login(user_data: UserLogin):
-    """
-    Inicia sesión de un usuario.
-    
-    - **email**: Email del usuario
-    - **password**: Contraseña del usuario
-    """
-    # Buscar usuario por email
-    user_ref = db.collection('users').where('email', '==', user_data.email).get()
-    if not user_ref or len(user_ref) == 0:
-        raise AuthenticationError("Credenciales inválidas")
-    
-    user = user_ref[0].to_dict()
-    
-    # Verificar contraseña
-    if not verify_password(user_data.password, user['password']):
-        raise AuthenticationError("Credenciales inválidas")
-    
-    # Generar tokens
-    access_token = create_access_token(data={"sub": user['id']})
-    refresh_token = create_refresh_token(data={"sub": user['id']})
-    
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer"
-    }
-
-@router.post("/logout", summary="Cerrar sesión", tags=["auth"])
-async def logout(request: LogoutRequest):
-    """
-    Cierra la sesión del usuario invalidando el refresh token.
-    - Requiere refresh token válido.
-    """
-    db = get_firebase_client()
-    token_doc = db.collection("refresh_tokens").document(request.refresh_token)
-    token_doc.set({"revoked": True})
-    return {"detail": "Sesión cerrada correctamente"}
-
-@router.post("/refresh", response_model=dict, summary="Refrescar token de acceso", tags=["auth"])
-async def refresh_token(token_data: TokenRefresh):
-    """
-    Refresca el token de acceso usando el refresh token.
-    
-    - **refresh_token**: Token de refresco válido
-    """
-    try:
-        # Verificar refresh token y generar nuevo access token
-        access_token = create_access_token(data={"sub": token_data.refresh_token})
-        return {
-            "access_token": access_token,
-            "token_type": "bearer"
-        }
-    except Exception as e:
-        raise AuthenticationError("Token de refresco inválido")
-
+# --- Recuperación de contraseña: solicitar email ---
 @router.post("/forgot-password", summary="Solicitar recuperación de contraseña", tags=["auth"])
-async def forgot_password(reset_data: PasswordReset):
-    """
-    Inicia el proceso de recuperación de contraseña.
-    
-    - **email**: Email del usuario
-    """
+async def forgot_password(request: ForgotPasswordRequest):
+    clients = get_firebase_clients()
+    db = clients['db']
     # Buscar usuario por email
-    user_ref = db.collection('users').where('email', '==', reset_data.email).get()
-    if not user_ref:
-        # Por seguridad, no revelamos si el email existe o no
-        return {"message": "Si el email existe, recibirás instrucciones para recuperar tu contraseña"}
-    
-    # Generar token de recuperación y enviar email
-    # ... (implementar lógica de envío de email)
-    
-    return {"message": "Si el email existe, recibirás instrucciones para recuperar tu contraseña"}
+    user_docs = db.collection('users').where('email', '==', request.email).get()
+    if not user_docs:
+        # No revelar si el email existe o no
+        return {"message": "Si el email existe, se ha enviado un enlace de recuperación"}
+    user_doc = user_docs[0]
+    user_id = user_doc.id
+    # Generar token único y expiración (1 hora)
+    token = str(uuid4())
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    db.collection('password_reset_tokens').document(token).set({
+        'user_id': user_id,
+        'email': request.email,
+        'expires_at': expires_at.isoformat()
+    })
+    # Enviar email (mock)
+    email_service.send_password_reset_email(request.email, token)
+    return {"message": "Si el email existe, se ha enviado un enlace de recuperación"}
 
+# --- Recuperación de contraseña: restablecer ---
 @router.post("/reset-password", summary="Restablecer contraseña", tags=["auth"])
-async def reset_password(reset_data: PasswordResetConfirm):
-    """
-    Restablece la contraseña usando un token de recuperación.
-    
-    - **token**: Token de recuperación
-    - **new_password**: Nueva contraseña
-    """
+async def reset_password(request: ResetPasswordRequest):
+    clients = get_firebase_clients()
+    db = clients['db']
+    token_doc = db.collection('password_reset_tokens').document(request.token).get()
+    if not token_doc.exists:
+        raise HTTPException(status_code=400, detail="Token inválido o expirado")
+    token_data = token_doc.to_dict()
+    user_id = token_data['user_id']
+    email = token_data['email']
     try:
-        # Verificar token y actualizar contraseña
-        # ... (implementar lógica de verificación de token)
-        
-        return {"message": "Contraseña actualizada exitosamente"}
-    except Exception as e:
-        raise AuthenticationError("Token de recuperación inválido o expirado") 
+        validate_password(request.new_password, email)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    # Actualizar contraseña en Firebase Auth
+    auth = clients['auth']
+    auth.update_user(user_id, password=request.new_password)
+    db.collection('password_reset_tokens').document(request.token).delete()
+    return {"message": "Contraseña actualizada correctamente"}
+
+# Helper para obtener el usuario actual desde el token
+async def get_current_user(request: Request):
+    auth_header = request.headers.get("authorization")
+    if not auth_header or not auth_header.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Token de autenticación requerido")
+    token = auth_header.split()[1]
+    try:
+        decoded = firebase_auth.verify_id_token(token)
+        return decoded
+    except Exception:
+        raise HTTPException(status_code=401, detail="Token inválido o expirado")
+
+@router.get("/sessions", summary="Listar sesiones activas", tags=["auth"])
+async def list_sessions(request: Request, user=Depends(get_current_user)):
+    clients = get_firebase_clients()
+    db = clients['db']
+    user_id = user['uid']
+    sessions = db.collection('sessions').where('user_id', '==', user_id).where('is_active', '==', True).stream()
+    result = []
+    for s in sessions:
+        data = s.to_dict()
+        data['session_id'] = s.id
+        result.append(data)
+    return {"active_sessions": result}
+
+@router.post("/logout-all", summary="Cerrar todas las sesiones", tags=["auth"])
+async def logout_all(request: Request, user=Depends(get_current_user)):
+    clients = get_firebase_clients()
+    db = clients['db']
+    user_id = user['uid']
+    sessions = db.collection('sessions').where('user_id', '==', user_id).where('is_active', '==', True).stream()
+    count = 0
+    for s in sessions:
+        db.collection('sessions').document(s.id).update({"is_active": False})
+        count += 1
+    return {"message": f"{count} sesiones cerradas correctamente"}
+
+@router.post("/onboarding/preferences", summary="Onboarding: preferencias de juego", tags=["onboarding"])
+async def onboarding_preferences(data: PreferencesOnboarding, user=Depends(get_current_user)):
+    clients = get_firebase_clients()
+    db = clients['db']
+    user_id = user['uid']
+    update_data = data.dict(exclude_unset=True)
+    db.collection('users').document(user_id).update(update_data)
+    return {"message": "Preferencias guardadas correctamente"}
+
+@router.post("/onboarding/profile", summary="Onboarding: configuración inicial", tags=["onboarding"])
+async def onboarding_profile(data: ProfileOnboarding, user=Depends(get_current_user)):
+    clients = get_firebase_clients()
+    db = clients['db']
+    user_id = user['uid']
+    update_data = data.dict(exclude_unset=True)
+    db.collection('users').document(user_id).update(update_data)
+    return {"message": "Perfil actualizado correctamente"}
+
+async def require_onboarding_completed(user=Depends(get_current_user)):
+    clients = get_firebase_clients()
+    db = clients['db']
+    user_id = user['uid']
+    user_doc = db.collection('users').document(user_id).get()
+    if not user_doc.exists:
+        raise HTTPException(status_code=403, detail="Usuario no encontrado")
+    data = user_doc.to_dict()
+    if not data.get('nivel_juego') or not data.get('lado_dominante') or not data.get('video_inicial_subido'):
+        raise HTTPException(
+            status_code=403,
+            detail="Debes completar tu onboarding (nivel de juego, lado dominante y subir tu video inicial) para acceder a esta función."
+        )
+    return user
+
+# Ejemplo de uso en un endpoint protegido
+@router.get("/protected/sessions", summary="Listar sesiones activas (requiere onboarding)", tags=["auth"])
+async def list_sessions_protected(request: Request, user=Depends(require_onboarding_completed)):
+    clients = get_firebase_clients()
+    db = clients['db']
+    user_id = user['uid']
+    sessions = db.collection('sessions').where('user_id', '==', user_id).where('is_active', '==', True).stream()
+    result = []
+    for s in sessions:
+        data = s.to_dict()
+        data['session_id'] = s.id
+        result.append(data)
+    return {"active_sessions": result} 

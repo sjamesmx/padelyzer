@@ -3,13 +3,20 @@ import uuid
 from datetime import datetime
 from firebase_admin import storage
 from google.cloud import storage as google_storage
-from app.core.config.firebase import initialize_firebase
+from app.core.config.firebase import initialize_firebase, get_firebase_clients
 from app.core.config import settings
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import mimetypes
+import magic
+from fastapi import HTTPException, APIRouter, Depends, UploadFile, File
+from app.core.auth import get_current_user
 
 logger = logging.getLogger(__name__)
+
+class VideoValidationError(Exception):
+    """Excepción personalizada para errores de validación de vídeo."""
+    pass
 
 def get_storage_client():
     """Obtiene el cliente de Firebase Storage."""
@@ -17,36 +24,63 @@ def get_storage_client():
         return storage.bucket()
     except Exception as e:
         logger.error(f"Error al obtener cliente de Storage: {str(e)}")
-        raise
+        raise HTTPException(
+            status_code=500,
+            detail="Error al conectar con el servicio de almacenamiento"
+        )
 
-def validate_video_file(file_path: str) -> None:
+def validate_video_file(file_path: str) -> Tuple[bool, str]:
     """
     Valida un archivo de video antes de subirlo.
-    Raises:
-        ValueError: Si el archivo no es válido
+    Returns:
+        Tuple[bool, str]: (es_válido, mensaje_error)
     """
     try:
+        logger.info(f"Validando archivo de video: {file_path}")
+        
         # Verificar que el archivo existe
         if not os.path.exists(file_path):
-            raise ValueError("El archivo no existe")
+            return False, "El archivo no existe"
             
         # Verificar el tamaño del archivo
         file_size = os.path.getsize(file_path)
+        logger.info(f"Tamaño del archivo: {file_size} bytes")
         if file_size > settings.MAX_VIDEO_SIZE_MB * 1024 * 1024:
-            raise ValueError(f"El archivo excede el tamaño máximo permitido de {settings.MAX_VIDEO_SIZE_MB}MB")
+            return False, f"El archivo excede el tamaño máximo permitido de {settings.MAX_VIDEO_SIZE_MB}MB"
             
-        # Verificar el tipo de archivo
-        mime_type = mimetypes.guess_type(file_path)[0]
-        if not mime_type or not mime_type.startswith('video/'):
-            raise ValueError("El archivo debe ser un video")
+        # Verificar la extensión del archivo
+        file_extension = os.path.splitext(file_path)[1].lower()
+        logger.info(f"Extensión del archivo: {file_extension}")
+        allowed_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.wmv']
+        if file_extension not in allowed_extensions:
+            return False, f"Extensión de archivo no permitida. Extensiones permitidas: {', '.join(allowed_extensions)}"
+            
+        # Verificar el tipo MIME
+        try:
+            mime = magic.Magic(mime=True)
+            mime_type = mime.from_file(file_path)
+        except ImportError:
+            mime_type = mimetypes.guess_type(file_path)[0]
+            
+        logger.info(f"Tipo MIME detectado: {mime_type}")
+        
+        if not mime_type:
+            logger.warning("No se pudo detectar el tipo MIME, verificando por extensión")
+            return True, ""
+            
+        if not mime_type.startswith('video/'):
+            return False, "El archivo debe ser un video"
             
         # Verificar que el tipo de video está permitido
-        if mime_type not in settings.ALLOWED_VIDEO_TYPES:
-            raise ValueError(f"Tipo de video no permitido. Tipos permitidos: {', '.join(settings.ALLOWED_VIDEO_TYPES)}")
+        if mime_type not in settings.ALLOWED_VIDEO_TYPES and mime_type != 'video/quicktime':
+            return False, f"Tipo de video no permitido. Tipos permitidos: {', '.join(settings.ALLOWED_VIDEO_TYPES)}"
+            
+        logger.info("Validación de archivo de video completada exitosamente")
+        return True, ""
             
     except Exception as e:
         logger.error(f"Error al validar archivo de video: {str(e)}")
-        raise ValueError(f"Error al validar archivo de video: {str(e)}")
+        return False, f"Error al validar archivo de video: {str(e)}"
 
 def generate_video_path(user_id: str, filename: str) -> str:
     """
@@ -54,49 +88,8 @@ def generate_video_path(user_id: str, filename: str) -> str:
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
-    return f"videos/{user_id}/{timestamp}_{safe_filename}"
-
-def upload_video(file_path: str, user_id: str, original_filename: str) -> Dict[str, str]:
-    """
-    Sube un vídeo a Firebase Storage.
-    Returns:
-        Dict[str, str]: Diccionario con la URL pública y la ruta de almacenamiento
-    """
-    try:
-        # Validar archivo
-        validate_video_file(file_path)
-        
-        bucket = get_storage_client()
-        storage_path = generate_video_path(user_id, original_filename)
-        
-        blob = bucket.blob(storage_path)
-        
-        # Configurar metadatos
-        blob.metadata = {
-            'uploaded_by': user_id,
-            'original_filename': original_filename,
-            'upload_date': datetime.now().isoformat(),
-            'content_type': mimetypes.guess_type(file_path)[0]
-        }
-        
-        # Subir archivo
-        blob.upload_from_filename(file_path)
-        
-        # Configurar el blob como público
-        blob.make_public()
-        
-        # Generar URL usando la base de Firebase Storage
-        base_url = f"https://firebasestorage.googleapis.com/v0/b/{settings.FIREBASE_STORAGE_BUCKET}/o"
-        encoded_path = storage_path.replace('/', '%2F')
-        video_url = f"{base_url}/{encoded_path}?alt=media"
-        
-        return {
-            'url': video_url,
-            'storage_path': storage_path
-        }
-    except Exception as e:
-        logger.error(f"Error al subir vídeo: {str(e)}")
-        raise
+    unique_id = str(uuid.uuid4())[:8]
+    return f"videos/{user_id}/{timestamp}_{unique_id}_{safe_filename}"
 
 def delete_video(storage_path: str) -> bool:
     """
@@ -173,54 +166,69 @@ def list_user_videos(user_id: str) -> List[Dict]:
         logger.error(f"Error al listar vídeos del usuario: {str(e)}")
         return []
 
-def get_video_blueprint(video_url: str) -> str:
-    """
-    Genera un blueprint único para un vídeo basado en su URL.
-    Esto evita que el mismo vídeo se suba múltiples veces.
-    """
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, video_url))
-
-def analyze_video(video_path: str, user_id: str) -> dict:
-    """
-    Analiza un video y guarda los resultados en Firestore.
-    """
-    try:
-        db, _ = get_firebase_client()
-        
-        # Crear documento de análisis
-        analysis_ref = db.collection('video_analyses').document()
-        analysis_data = {
-            'video_path': video_path,
-            'user_id': user_id,
-            'status': 'processing',
-            'created_at': datetime.utcnow(),
-            'updated_at': datetime.utcnow()
-        }
-        analysis_ref.set(analysis_data)
-        
-        # TODO: Implementar análisis de video
-        # Por ahora, simulamos un análisis exitoso
-        analysis_data.update({
-            'status': 'completed',
-            'results': {
-                'duration': 120,
-                'resolution': '1920x1080',
-                'format': 'mp4'
-            }
-        })
-        analysis_ref.update(analysis_data)
-        
-        return analysis_data
-    except Exception as e:
-        logger.error(f"Error al analizar video: {str(e)}")
-        raise
+def get_video_blueprint() -> APIRouter:
+    """Obtiene el router para las rutas de video."""
+    router = APIRouter()
+    
+    @router.post("/upload")
+    async def upload_video(
+        file: UploadFile = File(...),
+        current_user = Depends(get_current_user)
+    ):
+        """Sube un video a Firebase Storage."""
+        try:
+            # Obtener clientes de Firebase
+            clients = get_firebase_clients()
+            storage = clients['storage']
+            
+            # Crear nombre único para el archivo
+            file_name = f"videos/{current_user['uid']}/{file.filename}"
+            
+            # Subir archivo
+            blob = storage.blob(file_name)
+            blob.upload_from_file(file.file)
+            
+            return {"message": "Video subido correctamente", "file_name": file_name}
+        except Exception as e:
+            logger.error(f"Error al subir video: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @router.get("/list")
+    async def list_videos(
+        current_user = Depends(get_current_user)
+    ):
+        """Lista los videos del usuario."""
+        try:
+            # Obtener clientes de Firebase
+            clients = get_firebase_clients()
+            storage = clients['storage']
+            
+            # Listar archivos
+            prefix = f"videos/{current_user['uid']}/"
+            blobs = storage.list_blobs(prefix=prefix)
+            
+            videos = []
+            for blob in blobs:
+                videos.append({
+                    "name": blob.name,
+                    "url": blob.public_url,
+                    "size": blob.size,
+                    "updated": blob.updated
+                })
+            
+            return videos
+        except Exception as e:
+            logger.error(f"Error al listar videos: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    return router
 
 def get_video_analysis(analysis_id: str) -> Optional[dict]:
     """
     Obtiene los resultados de un análisis de video.
     """
     try:
-        db, _ = get_firebase_client()
+        db, _ = get_firebase_clients()
         analysis_ref = db.collection('video_analyses').document(analysis_id)
         analysis_doc = analysis_ref.get()
         

@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from datetime import datetime
 from firebase_admin import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from services.notification_service import send_notification
+from app.services.notification_service import send_notification
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)

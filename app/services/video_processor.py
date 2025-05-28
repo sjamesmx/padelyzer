@@ -5,485 +5,344 @@ import logging
 import torch
 from functools import lru_cache
 import os
+from .player_detector import PlayerDetector
+from datetime import datetime
+from .stroke_detector import StrokeDetector
+from .movement_analyzer import MovementAnalyzer
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
 class VideoProcessor:
-    def __init__(self):
-        # Configuración optimizada para M2
+    """Clase para procesar videos de pádel."""
+    
+    def __init__(self, model_size="n", device="mps", num_workers: int = 4, batch_size: int = 8):
+        """
+        Inicializa el procesador de video.
+        
+        Args:
+            model_size: Tamaño del modelo YOLO ('n', 's', 'm', 'l', 'x')
+            device: Dispositivo para inferencia ('cpu', 'cuda', 'mps')
+            num_workers: Número de hilos para procesamiento paralelo
+            batch_size: Tamaño de lote de frames a procesar en paralelo
+        """
+        self.model_size = model_size
+        self.device = device
+        self.player_detector = PlayerDetector(model_size=model_size, device=device)
+        self.frame_cache = []
+        self.stroke_detector = StrokeDetector()
+        self.movement_analyzer = MovementAnalyzer()
         self.frame_rate = 30
-        self.resolution = (640, 480)  # Resolución reducida para mejor rendimiento
-        self.batch_size = 32  # Tamaño de lote optimizado
-
-        # Configuración para M2
-        if torch.backends.mps.is_available():
-            logger.info("Utilizando MPS (Metal Performance Shaders) para aceleración")
-            self.device = torch.device("mps")
-        else:
-            logger.info("MPS no disponible, usando CPU")
-            self.device = torch.device("cpu")
-
-        # Caché optimizado
-        self._frame_cache = {}
-        self._cache_size = 1000  # Máximo número de frames en caché
-
-        # Configuración de procesamiento
-        self.frame_skip = 5  # Procesar cada 5 frames para optimizar rendimiento
-        self.motion_threshold = 10  # Umbral para detección de movimiento
-
-    def process_video(self, video_url: str) -> List[np.ndarray]:
-        """Procesa un video y retorna los frames relevantes."""
+        self.resolution = (1280, 720)
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        
+    def process_video(self, video_path: str, output_path: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Procesa un video de pádel y genera métricas de análisis.
+        
+        Args:
+            video_path: Ruta al video a procesar
+            output_path: Ruta opcional para guardar el video procesado
+            
+        Returns:
+            Diccionario con resultados del análisis
+        """
         try:
             # Abrir video
-            cap = cv2.VideoCapture(video_url)
+            cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
-                raise ValueError("No se pudo abrir el video")
-
-            frames = []
-            batch = []
+                raise ValueError(f"No se pudo abrir el video: {video_path}")
+                
+            # Obtener propiedades del video
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            duration = total_frames / fps
+            
+            # Inicializar variables de análisis
+            strokes = []
+            player_positions = []
             frame_count = 0
-
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
-
-                # Redimensionar frame
+            active_player = None
+            last_stroke_frame = -1
+            min_frames_between_strokes = int(fps * 0.5)  # Mínimo 0.5 segundos entre golpes
+            batch = []
+            batch_indices = []
+            results_by_index = {}
+            
+            def process_frame(idx, frame):
                 frame = cv2.resize(frame, self.resolution)
-
-                # Acumular frames para procesamiento por lotes
-                if frame_count % self.frame_skip == 0:
-                    batch.append(frame)
-
-                # Procesar lote cuando alcanza el tamaño deseado
-                if len(batch) >= self.batch_size:
-                    processed_batch = self._process_batch(batch)
-                    frames.extend(processed_batch)
-                    batch = []
-
-                frame_count += 1
-"""
-Módulo para procesar videos y extraer información sobre golpes de pádel.
-"""
-import cv2
-import numpy as np
-from typing import List, Dict, Any, Tuple, Optional
-import logging
-
-logger = logging.getLogger(__name__)
-
-class VideoProcessor:
-    """
-    Clase para procesar videos de pádel y analizar los golpes y movimientos.
-    """
-    
-    def __init__(self):
-        """Inicializa el procesador de video."""
-        self.batch_size = 10  # Número de frames a procesar en cada lote
-        
-    def _preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
-        """
-        Preprocesa un frame para análisis.
-        
-        Args:
-            frame: Frame de video en formato BGR
-            
-        Returns:
-            Frame preprocesado (escala de grises)
-        """
-        # Convertir a escala de grises para simplificar procesamiento
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-    def _process_batch(self, batch: List[np.ndarray]) -> List[np.ndarray]:
-        """
-        Procesa un lote de frames.
-        
-        Args:
-            batch: Lista de frames a procesar
-            
-        Returns:
-            Lista de frames procesados
-        """
-        processed_batch = []
-        for frame in batch:
-            processed = self._preprocess_frame(frame)
-            processed_batch.append(processed)
-        return processed_batch
-    
-    def process_video(self, video_path: str) -> List[np.ndarray]:
-        """
-        Procesa un video completo y extrae los frames.
-        
-        Args:
-            video_path: Ruta al archivo de video
-            
-        Returns:
-            Lista de frames procesados
-        """
-        frames = []
-        cap = cv2.VideoCapture(video_path)
-        
-        if not cap.isOpened():
-            logger.error(f"No se pudo abrir el video: {video_path}")
-            return []
-        
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            # Preprocesar el frame
-            processed = self._preprocess_frame(frame)
-            frames.append(processed)
-            
-        cap.release()
-        return frames
-    
-    def _detect_movement(self, 
-                         current_frame: np.ndarray, 
-                         player_position: Dict[str, Any],
-                         prev_frame: Optional[np.ndarray] = None) -> Dict[str, Any]:
-        """
-        Detecta movimiento y analiza el tipo de golpe.
-        
-        Args:
-            current_frame: Frame actual
-            player_position: Posición del jugador en el frame
-            prev_frame: Frame anterior para comparación
-            
-        Returns:
-            Diccionario con información sobre el golpe detectado
-        """
-        # Si no hay frame anterior, no podemos detectar movimiento
-        if prev_frame is None:
-            prev_frame = np.zeros_like(current_frame)
-        
-        # En un caso real, aquí se implementaría detección de movimiento con OpenCV
-        # Para las pruebas, simplemente simulamos la detección
-        
-        # Calcular diferencia entre frames
-        frame_diff = cv2.absdiff(current_frame, prev_frame)
-        
-        # Simular detección de golpe basada en la diferencia
-        mean_diff = np.mean(frame_diff)
-        is_stroke = mean_diff > 10  # Umbral arbitrario para las pruebas
-        
-        # Para pruebas, determinar tipo de golpe aleatoriamente
-        stroke_types = ["derecha", "revés", "volea", "remate", "bandeja"]
-        stroke_type = stroke_types[hash(str(current_frame[:10, :10].tobytes())) % len(stroke_types)]
-        
-        # Simular cálculo de ángulo de codo y velocidad de muñeca
-        elbow_angle = 120 + (hash(str(current_frame[:5, :5].tobytes())) % 40)
-        wrist_speed = 10 + (hash(str(current_frame[:5, 5:10].tobytes())) % 20)
-        
-        return {
-            "is_stroke": is_stroke,
-            "stroke_type": stroke_type,
-            "elbow_angle": elbow_angle,
-            "wrist_speed": wrist_speed
-        }
-    
-    def analyze_strokes(self, 
-                        frames: List[np.ndarray], 
-                        player_position: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Analiza los golpes en una secuencia de frames.
-        
-        Args:
-            frames: Lista de frames a analizar
-            player_position: Posición del jugador
-            
-        Returns:
-            Lista de golpes detectados con sus características
-        """
-        strokes = []
-        prev_frame = None
-        stroke_in_progress = False
-        current_stroke = {}
-        
-        for i, frame in enumerate(frames):
-            movement = self._detect_movement(frame, player_position, prev_frame)
-            
-            # Si detectamos un golpe
-            if movement["is_stroke"] and not stroke_in_progress:
-                stroke_in_progress = True
-                current_stroke = {
-                    "start_frame": i,
-                    "type": movement["stroke_type"],
-                    "max_elbow_angle": movement["elbow_angle"],
-                    "max_wrist_speed": movement["wrist_speed"]
+                detections = self.player_detector.detect(frame)
+                local_strokes = []
+                local_positions = []
+                local_active_player = self._find_active_player(detections, frame) if detections else None
+                local_last_stroke_frame = None
+                stroke_info = None
+                if detections:
+                    if local_active_player and (idx - last_stroke_frame) >= min_frames_between_strokes:
+                        if self.stroke_detector.detect_stroke(frame, local_active_player):
+                            stroke_info = {
+                                'frame': idx,
+                                'player_id': local_active_player.get('id', 0),
+                                'type': self._classify_stroke(local_active_player),
+                                'position': self.movement_analyzer.analyze_position(local_active_player),
+                                'consistency': self._calculate_stroke_consistency(local_active_player),
+                                'effectiveness': self._calculate_stroke_effectiveness(local_active_player),
+                                'positioning': self._calculate_positioning_score(local_active_player),
+                                'timestamp': idx / fps
+                            }
+                            local_strokes.append(stroke_info)
+                            local_last_stroke_frame = idx
+                    for det in detections:
+                        local_positions.append({
+                            'player_id': det.get('id', 0),
+                            'position': self.movement_analyzer.analyze_position(det),
+                            'timestamp': idx / fps
+                        })
+                return {
+                    'frame': frame,
+                    'strokes': local_strokes,
+                    'positions': local_positions,
+                    'last_stroke_frame': local_last_stroke_frame
                 }
-            # Si el golpe continúa
-            elif movement["is_stroke"] and stroke_in_progress:
-                # Actualizar valores máximos
-                if movement["elbow_angle"] > current_stroke["max_elbow_angle"]:
-                    current_stroke["max_elbow_angle"] = movement["elbow_angle"]
-                if movement["wrist_speed"] > current_stroke["max_wrist_speed"]:
-                    current_stroke["max_wrist_speed"] = movement["wrist_speed"]
-            # Si el golpe termina
-            elif not movement["is_stroke"] and stroke_in_progress:
-                stroke_in_progress = False
-                current_stroke["end_frame"] = i
-                current_stroke["quality"] = self._calculate_stroke_quality(current_stroke)
-                strokes.append(current_stroke)
             
-            prev_frame = frame
-        
-        # Si hay un golpe en progreso al final de los frames
-        if stroke_in_progress:
-            current_stroke["end_frame"] = len(frames) - 1
-            current_stroke["quality"] = self._calculate_stroke_quality(current_stroke)
-            strokes.append(current_stroke)
-        
-        return strokes
-    
-    def _calculate_stroke_quality(self, stroke: Dict[str, Any]) -> float:
-        """
-        Calcula la calidad de un golpe basado en sus características.
-        
-        Args:
-            stroke: Información del golpe
+            with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+                futures = {}
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    batch.append(frame)
+                    batch_indices.append(frame_count)
+                    if len(batch) == self.batch_size:
+                        for i, f in zip(batch_indices, batch):
+                            futures[executor.submit(process_frame, i, f)] = i
+                        batch = []
+                        batch_indices = []
+                    frame_count += 1
+                # Procesar los frames restantes
+                for i, f in zip(batch_indices, batch):
+                    futures[executor.submit(process_frame, i, f)] = i
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    try:
+                        result = future.result()
+                        results_by_index[idx] = result
+                    except Exception as e:
+                        logger.error(f"Error procesando frame {idx}: {str(e)}")
             
-        Returns:
-            Puntuación de calidad (0-100)
-        """
-        # En un caso real, se implementaría un algoritmo más complejo
-        # Para las pruebas, usamos una fórmula simple
-        elbow_factor = min(stroke["max_elbow_angle"] / 180.0, 1.0) * 50
-        speed_factor = min(stroke["max_wrist_speed"] / 20.0, 1.0) * 50
-        
-        return elbow_factor + speed_factor
-    
-    def analyze_game(self, 
-                     frames: List[np.ndarray], 
-                     player_position: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Analiza un juego completo y calcula métricas generales.
-        
-        Args:
-            frames: Lista de frames del juego
-            player_position: Posición del jugador
+            # Ordenar resultados por índice de frame
+            for idx in sorted(results_by_index.keys()):
+                result = results_by_index[idx]
+                if output_path:
+                    self.frame_cache.append(result['frame'])
+                if result['strokes']:
+                    strokes.extend(result['strokes'])
+                    if result['last_stroke_frame'] is not None:
+                        last_stroke_frame = result['last_stroke_frame']
+                if result['positions']:
+                    player_positions.extend(result['positions'])
             
-        Returns:
-            Diccionario con métricas del juego
-        """
-        # Analizar golpes
-        strokes = self.analyze_strokes(frames, player_position)
-        
-        # Calcular métricas globales
-        if strokes:
-            max_elbow_angle = max(stroke["max_elbow_angle"] for stroke in strokes)
-            max_wrist_speed = max(stroke["max_wrist_speed"] for stroke in strokes)
-            avg_quality = sum(stroke["quality"] for stroke in strokes) / len(strokes)
-        else:
-            max_elbow_angle = 0
-            max_wrist_speed = 0
-            avg_quality = 0
-        
-        # Simular otras métricas para pruebas
-        total_points = len(strokes) + 5
-        points_won = len(strokes) // 2 + 2
-        net_effectiveness = min(80 + (hash(str(frames[0][:10, :10].tobytes())) % 20), 100)
-        court_coverage = min(70 + (hash(str(frames[0][:5, :5].tobytes())) % 30), 100)
-        
-        return {
-            "total_points": total_points,
-            "points_won": points_won,
-            "net_effectiveness": net_effectiveness,
-            "court_coverage": court_coverage,
-            "max_elbow_angle": max_elbow_angle,
-            "max_wrist_speed": max_wrist_speed,
-            "avg_stroke_quality": avg_quality,
-            "strokes": strokes
-        }
-            # Procesar último lote si existe
-            if batch:
-                processed_batch = self._process_batch(batch)
-                frames.extend(processed_batch)
-
+            # Liberar recursos
             cap.release()
-            return frames
-
+            
+            # Analizar movimientos
+            movements = self.movement_analyzer.analyze_movements(player_positions)
+            
+            # Generar video de salida
+            if output_path and self.frame_cache:
+                self._generate_output_video(output_path, fps)
+            
+            # Preparar resultados
+            results = {
+                'duration': duration,
+                'total_frames': total_frames,
+                'analysis': {
+                    'strokes': strokes,
+                    'movements': movements,
+                    'stroke_types': self._analyze_stroke_types(strokes),
+                    'consistency': self._calculate_consistency(strokes),
+                    'technique': self._calculate_technique_score(strokes),
+                    'movement_quality': self._analyze_movement_quality(player_positions)
+                }
+            }
+            
+            return results
+            
         except Exception as e:
             logger.error(f"Error procesando video: {str(e)}")
             raise
-
-    @lru_cache(maxsize=128)
-    def _preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
-        """Aplica preprocesamiento a un frame."""
-        if not isinstance(frame, np.ndarray):
-            raise TypeError("El frame debe ser un numpy.ndarray")
-
-        # Convertir a escala de grises
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-        # Aplicar filtro Gaussiano
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-
-        # Normalizar contraste
-        normalized = cv2.normalize(blurred, None, 0, 255, cv2.NORM_MINMAX)
-
-        return normalized
-
-    def _process_batch(self, batch: List[np.ndarray]) -> List[np.ndarray]:
-        """Procesa un lote de frames de manera optimizada para M2."""
+            
+    def _classify_stroke(self, detection: Dict[str, Any]) -> str:
+        """Clasifica el tipo de golpe basado en la detección."""
         try:
-            # Convertir batch a tensor para procesamiento GPU si está disponible
-            batch_array = np.array(batch)
-            # batch_tensor = torch.from_numpy(batch_array).to(self.device)
-
-            with torch.no_grad():  # Optimización de memoria
-                processed_batch = []
-                for frame in batch_array:
-                    # if self.device.type == "mps":
-                    #     frame = frame.cpu()
-                    # frame_np = frame.numpy()
-                    processed = self._preprocess_frame(frame)
-                    processed_batch.append(processed)
-
-                return processed_batch
-
+            # Extraer métricas del golpe
+            wrist_speed = detection.get('wrist_speed', 0)
+            elbow_angle = detection.get('elbow_angle', 0)
+            wrist_direction = detection.get('wrist_direction', 0)
+            
+            # Clasificar el golpe basado en las métricas
+            if elbow_angle > 100 and wrist_speed > 0.6:  # Reducido de 120/0.8 a 100/0.6
+                return "smash"
+            elif 80 < elbow_angle <= 100 and wrist_speed > 0.4:  # Reducido de 100/0.6 a 80/0.4
+                return "bandeja"
+            elif 70 < elbow_angle <= 100 and wrist_speed <= 0.4:  # Reducido de 90/0.6 a 70/0.4
+                return "globo"
+            elif elbow_angle <= 50 and wrist_speed < 0.2:  # Reducido de 60/0.3 a 50/0.2
+                return "defensivo"
+            elif 50 < elbow_angle <= 80 and wrist_speed > 0.15:  # Reducido de 60/0.2 a 50/0.15
+                return "volea_" + ("derecha" if wrist_direction > 0 else "reves")
+            else:
+                return "derecha" if wrist_direction > 0 else "reves"
+                
         except Exception as e:
-            logger.error(f"Error en procesamiento por lotes: {str(e)}", exc_info=True)
-            # Fallback a procesamiento individual
-            return [self._preprocess_frame(frame) for frame in batch]
-
-    def analyze_strokes(self, frames: List[np.ndarray], player_position: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Analiza los golpes en los frames del video."""
-        strokes = []
-        current_stroke = None
-        prev_frame = None
-
-        for i, frame in enumerate(frames):
-            # Detectar movimiento del jugador
-            movement = self._detect_movement(frame, player_position, prev_frame)
-
-            if movement['is_stroke']:
-                if not current_stroke:
-                    current_stroke = {
-                        'start_frame': i,
-                        'type': movement['stroke_type'],
-                        'elbow_angle': movement['elbow_angle'],
-                        'wrist_speed': movement['wrist_speed']
-                    }
-                else:
-                    # Actualizar métricas del golpe actual
-                    current_stroke['elbow_angle'] = max(
-                        current_stroke['elbow_angle'],
-                        movement['elbow_angle']
-                    )
-                    current_stroke['wrist_speed'] = max(
-                        current_stroke['wrist_speed'],
-                        movement['wrist_speed']
-                    )
-            elif current_stroke:
-                # Finalizar golpe actual
-                current_stroke['end_frame'] = i
-                current_stroke['timestamp'] = i / self.frame_rate
-                strokes.append(current_stroke)
-                current_stroke = None
-
-            prev_frame = frame
-
-        return strokes
-
-    def _detect_movement(self, frame: np.ndarray, player_position: Dict[str, Any], prev_frame: Optional[np.ndarray]) -> Dict[str, Any]:
-        """Detecta movimiento y tipo de golpe en un frame."""
-        if prev_frame is None:
-            return {
-                'is_stroke': False,
-                'stroke_type': None,
-                'elbow_angle': 0,
-                'wrist_speed': 0
-            }
-
-        # Convertir frames a escala de grises
-        curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-
-        # Calcular diferencia entre frames
-        diff = cv2.absdiff(curr_gray, prev_gray)
-        motion_score = np.mean(diff)
-
-        # Detectar movimiento significativo
-        is_stroke = motion_score > self.motion_threshold
-
-        return {
-            'is_stroke': is_stroke,
-            'stroke_type': 'unknown' if is_stroke else None,
-            'elbow_angle': 90 if is_stroke else 0,  # Valor por defecto
-            'wrist_speed': motion_score if is_stroke else 0
-        }
-
-    def analyze_game(self, frames: List[np.ndarray], player_position: Dict[str, Any]) -> Dict[str, Any]:
-        """Analiza un video de juego completo."""
-        logger.info(f"Iniciando análisis de juego con {len(frames)} frames")
-
+            logger.error(f"Error clasificando golpe: {str(e)}")
+            return "unknown"
+        
+    def _calculate_stroke_consistency(self, detection: Dict[str, Any]) -> float:
+        """Calcula la consistencia del golpe."""
         try:
-            strokes = self.analyze_strokes(frames, player_position)
-            logger.info(f"Detectados {len(strokes)} golpes en el video")
-
-            # Calcular métricas de juego
-            total_points = self._count_points(frames)
-            points_won = self._count_points_won(frames, player_position)
-            net_effectiveness = self._calculate_net_effectiveness(frames, player_position)
-            court_coverage = self._calculate_court_coverage(frames, player_position)
-
-            logger.info(f"Métricas calculadas: {total_points} puntos totales, {points_won} puntos ganados")
-            logger.debug(f"Efectividad en red: {net_effectiveness:.2f}, Cobertura: {court_coverage:.2f}")
-
-            # Si no hay golpes, devolver valores por defecto
-            if not strokes:
-                logger.warning("No se detectaron golpes en el análisis")
-                return {
-                    'total_points': total_points,
-                    'points_won': points_won,
-                    'net_effectiveness': net_effectiveness,
-                    'court_coverage': court_coverage,
-                    'max_elbow_angle': 0,
-                    'max_wrist_speed': 0,
-                    'strokes': []
-                }
-
-            max_elbow = max(s['elbow_angle'] for s in strokes)
-            max_wrist = max(s['wrist_speed'] for s in strokes)
-            logger.info(f"Ángulo máximo del codo: {max_elbow:.2f}, Velocidad máxima de muñeca: {max_wrist:.2f}")
-
-            return {
-                'total_points': total_points,
-                'points_won': points_won,
-                'net_effectiveness': net_effectiveness,
-                'court_coverage': court_coverage,
-                'max_elbow_angle': max_elbow,
-                'max_wrist_speed': max_wrist,
-                'strokes': strokes
-            }
-
+            wrist_speed = detection.get('wrist_speed', 0)
+            elbow_angle = detection.get('elbow_angle', 0)
+            
+            # Calcular consistencia basada en la estabilidad de las métricas
+            speed_consistency = min(1.0, wrist_speed / 2.0)  # Normalizar velocidad
+            angle_consistency = min(1.0, abs(90 - elbow_angle) / 90.0)  # Normalizar ángulo
+            
+            return (speed_consistency + angle_consistency) / 2.0
+            
         except Exception as e:
-            logger.error(f"Error en analyze_game: {str(e)}", exc_info=True)
+            logger.error(f"Error calculando consistencia: {str(e)}")
+            return 0.0
+        
+    def _calculate_stroke_effectiveness(self, detection: Dict[str, Any]) -> float:
+        """Calcula la efectividad del golpe."""
+        try:
+            wrist_speed = detection.get('wrist_speed', 0)
+            elbow_angle = detection.get('elbow_angle', 0)
+            position = detection.get('position', 'unknown')
+            
+            # Calcular efectividad basada en múltiples factores
+            speed_score = min(1.0, wrist_speed / 2.0)
+            angle_score = min(1.0, abs(90 - elbow_angle) / 90.0)
+            position_score = 0.8 if position in ['red', 'fondo'] else 0.5
+            
+            return (speed_score + angle_score + position_score) / 3.0
+            
+        except Exception as e:
+            logger.error(f"Error calculando efectividad: {str(e)}")
+            return 0.0
+        
+    def _calculate_positioning_score(self, detection: Dict[str, Any]) -> float:
+        """Calcula la puntuación de posicionamiento."""
+        try:
+            position = detection.get('position', 'unknown')
+            wrist_speed = detection.get('wrist_speed', 0)
+            
+            # Calcular puntuación de posicionamiento
+            position_score = 0.8 if position in ['red', 'fondo'] else 0.5
+            speed_score = min(1.0, wrist_speed / 2.0)
+            
+            return (position_score + speed_score) / 2.0
+            
+        except Exception as e:
+            logger.error(f"Error calculando posicionamiento: {str(e)}")
+            return 0.0
+        
+    def _analyze_stroke_types(self, strokes: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Analiza la distribución de tipos de golpes."""
+        stroke_types = {}
+        for stroke in strokes:
+            stroke_type = stroke['type']
+            stroke_types[stroke_type] = stroke_types.get(stroke_type, 0) + 1
+        return stroke_types
+        
+    def _calculate_consistency(self, strokes: List[Dict[str, Any]]) -> float:
+        """Calcula la consistencia general de los golpes."""
+        if not strokes:
+            return 0.0
+        return sum(s['consistency'] for s in strokes) / len(strokes)
+        
+    def _calculate_technique_score(self, strokes: List[Dict[str, Any]]) -> float:
+        """Calcula la puntuación técnica basada en los golpes."""
+        if not strokes:
+            return 0.0
+        return sum(s['effectiveness'] for s in strokes) / len(strokes)
+        
+    def _analyze_movement_quality(self, positions: List[Dict[str, Any]]) -> float:
+        """Analiza la calidad del movimiento."""
+        if not positions:
+            return 0.0
+        # TODO: Implementar análisis de calidad de movimiento
+        return 0.85  # Por ahora retornamos un valor por defecto
+        
+    def _generate_output_video(self, output_path: str, fps: float):
+        """Genera el video de salida con anotaciones."""
+        try:
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(output_path, fourcc, fps, self.resolution)
+            
+            for frame in self.frame_cache:
+                out.write(frame)
+                
+            out.release()
+            
+        except Exception as e:
+            logger.error(f"Error generando video de salida: {str(e)}")
             raise
+            
+    def __del__(self):
+        """Limpia recursos al destruir el objeto."""
+        self.frame_cache.clear()
 
-    def _count_points(self, frames: List[np.ndarray]) -> int:
-        """Cuenta el número total de puntos en el video."""
-        # TODO: Implementar conteo de puntos
-        return 0
-
-    def _count_points_won(self, frames: List[np.ndarray], player_position: Dict[str, Any]) -> int:
-        """Cuenta los puntos ganados por el jugador."""
-        # TODO: Implementar conteo de puntos ganados
-        return 0
-
-    def _calculate_net_effectiveness(self, frames: List[np.ndarray], player_position: Dict[str, Any]) -> float:
-        """Calcula la efectividad en la red."""
-        # TODO: Implementar cálculo de efectividad en la red
-        return 0.0
-
-    def _calculate_court_coverage(self, frames: List[np.ndarray], player_position: Dict[str, Any]) -> float:
-        """Calcula la cobertura de la pista."""
-        # TODO: Implementar cálculo de cobertura
-        return 0.0
-
-    def clear_cache(self):
-        """Limpia la caché de frames procesados."""
-        self._frame_cache.clear()
-        self._preprocess_frame.cache_clear()
+    def _find_active_player(self, detections: List[Dict[str, Any]], frame: np.ndarray) -> Optional[Dict[str, Any]]:
+        """
+        Encuentra el jugador que está ejecutando un golpe.
+        
+        Args:
+            detections: Lista de detecciones de jugadores
+            frame: Frame actual
+            
+        Returns:
+            Dict con información del jugador activo o None si no hay ninguno
+        """
+        try:
+            active_player = None
+            max_motion_score = 0
+            
+            for detection in detections:
+                # Calcular métricas de movimiento
+                wrist_speed = detection.get('wrist_speed', 0)
+                elbow_angle = detection.get('elbow_angle', 0)
+                wrist_direction = detection.get('wrist_direction', 0)
+                
+                # Calcular score de movimiento
+                motion_score = 0
+                
+                # Score por velocidad de muñeca
+                if wrist_speed > 0.5:  # Reducido de 1.0 a 0.5
+                    motion_score += min(1.0, wrist_speed / 2.0)
+                
+                # Score por ángulo de codo
+                if 60 <= elbow_angle <= 150:  # Rango más amplio
+                    angle_score = 1.0 - abs(90 - elbow_angle) / 90.0
+                    motion_score += angle_score
+                
+                # Score por cambio de dirección
+                if abs(wrist_direction) > 0.3:  # Reducido de 0.5 a 0.3
+                    motion_score += min(1.0, abs(wrist_direction))
+                
+                # Actualizar jugador activo si tiene mayor score
+                if motion_score > max_motion_score:
+                    max_motion_score = motion_score
+                    active_player = detection
+            
+            # Solo considerar jugador activo si supera un umbral mínimo
+            if max_motion_score > 0.5:  # Reducido de 1.0 a 0.5
+                return active_player
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error encontrando jugador activo: {str(e)}")
+            return None

@@ -1,41 +1,62 @@
+from typing import Generator, Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+from jose import jwt, JWTError
+from pydantic import ValidationError
+from firebase_admin import auth, credentials, initialize_app
+
 from app.core.config import settings
-from app.services.firebase import get_firebase_client
-from app.schemas.user import UserInDB
-import logging
+from app.core.exceptions import PadelException
+from app.schemas.token import TokenPayload
+from app.services.firebase.firebase_config import get_firebase_app
 
-logger = logging.getLogger(__name__)
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
 
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserInDB:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="No se pudo validar las credenciales",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
+    """
+    Dependencia para obtener el usuario actual basado en el token JWT
+    """
     try:
-        logger.info(f"Decodificando token: {token[:10]}...")
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            logger.error("Token no contiene sub claim")
-            raise credentials_exception
-        logger.info(f"Token decodificado correctamente. user_id: {user_id}")
-    except JWTError as e:
-        logger.error(f"Error decodificando token: {str(e)}")
-        raise credentials_exception
-    try:
-        db = get_firebase_client()
-        user_doc = db.collection('users').document(user_id).get()
-        if not user_doc.exists:
-            logger.error(f"Usuario no encontrado en Firestore: {user_id}")
-            raise credentials_exception
-        user_data = user_doc.to_dict()
-        user_data['id'] = user_doc.id
-        logger.info(f"Usuario encontrado en Firestore: {user_id}")
-        return UserInDB(**user_data)
+        # Verificar token con Firebase
+        decoded_token = auth.verify_id_token(token)
+        return decoded_token
+    except (JWTError, ValidationError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     except Exception as e:
-        logger.error(f"Error obteniendo usuario de Firestore: {str(e)}")
-        raise credentials_exception 
+        raise PadelException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            message="Error al validar credenciales",
+            error_type="AUTH_ERROR"
+        )
+
+def get_current_active_user(
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """
+    Dependencia para verificar que el usuario está activo
+    """
+    if not current_user.get("email_verified", False):
+        raise PadelException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            message="Usuario no verificado",
+            error_type="AUTH_ERROR"
+        )
+    return current_user
+
+def get_firebase_auth() -> Generator:
+    """
+    Dependencia para obtener el cliente de autenticación de Firebase
+    """
+    try:
+        app = get_firebase_app()
+        yield auth.Client(app)
+    except Exception as e:
+        raise PadelException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            message="Error al inicializar Firebase Auth",
+            error_type="FIREBASE_ERROR"
+        ) 

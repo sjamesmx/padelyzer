@@ -3,7 +3,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from app.core.middleware import error_handling_middleware
-from app.core.exceptions import AppException, PadelException
+from app.api.v1.dependencies.exceptions import AppException, PadelException
 from unittest.mock import patch
 
 # Mock Firebase initialization
@@ -38,7 +38,7 @@ def test_app():
             content={
                 "error": {
                     "code": exc.status_code,
-                    "message": exc.detail,
+                    "message": exc.message,
                     "type": exc.__class__.__name__
                 }
             }
@@ -50,18 +50,11 @@ def test_app():
 
     @app.get("/test-app-error")
     async def test_app_error():
-        raise AppException(
-            status_code=400,
-            message="Bad request",
-            error_code="INVALID_INPUT"
-        )
+        raise AppException(message="Bad request", status_code=400)
 
     @app.get("/test-padel-error")
     async def test_padel_error():
-        raise PadelException(
-            status_code=422,
-            detail="Invalid input data"
-        )
+        raise PadelException(message="Invalid input data", status_code=422)
 
     @app.get("/test-unexpected-error")
     async def test_unexpected_error():

@@ -1,9 +1,10 @@
 from typing import Optional, Tuple
 import logging
 from firebase_admin import storage
-from app.core.config.firebase import get_firebase_client
+from app.services.firebase import get_firebase_client
 import os
 from datetime import datetime
+import mimetypes
 
 logger = logging.getLogger(__name__)
 
@@ -28,23 +29,31 @@ class StorageService:
         """
         try:
             # Obtener el bucket de Storage
-            _, _, bucket = get_firebase_client()
+            bucket = storage.bucket()
             
             # Validar el tamaño del archivo
             if len(file_data) > StorageService.MAX_FILE_SIZE:
                 return None, "El archivo excede el tamaño máximo permitido (100MB)"
             
+            # Validar la extensión del archivo
+            file_extension = os.path.splitext(filename)[1].lower()
+            if file_extension not in ['.mp4', '.mov']:
+                return None, "Formato de archivo no permitido. Solo se permiten archivos MP4 y MOV"
+            
             # Generar un nombre único para el archivo
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            safe_filename = f"{user_id}/{timestamp}_{filename}"
+            safe_filename = f"videos/{user_id}/{timestamp}_{filename}"
             
             # Crear una referencia al archivo en Storage
             blob = bucket.blob(safe_filename)
             
+            # Determinar el tipo MIME
+            content_type = mimetypes.guess_type(filename)[0] or 'video/mp4'
+            
             # Subir el archivo
             blob.upload_from_string(
                 file_data,
-                content_type='video/mp4'  # Asumimos MP4 por ahora
+                content_type=content_type
             )
             
             # Generar URL pública
@@ -70,7 +79,7 @@ class StorageService:
         """
         try:
             # Obtener el bucket de Storage
-            _, _, bucket = get_firebase_client()
+            bucket = storage.bucket()
             
             # Extraer el nombre del archivo de la URL
             blob = bucket.blob(video_url.split('/')[-1])
@@ -97,7 +106,7 @@ class StorageService:
         """
         try:
             # Obtener el bucket de Storage
-            _, _, bucket = get_firebase_client()
+            bucket = storage.bucket()
             
             # Obtener los metadatos del archivo
             blob = bucket.blob(video_url.split('/')[-1])

@@ -3,7 +3,8 @@ from app.api.v1.endpoints import (
     auth_router,
     users_router,
     video_routes,
-    friends_router
+    friends_router,
+    padel_iq_router
 )
 
 api_router = APIRouter()
@@ -18,4 +19,7 @@ api_router.include_router(users_router, prefix="/users", tags=["users"])
 api_router.include_router(video_routes.router, prefix="")  # No prefix needed as it's already in the router
 
 # Friends routes
-api_router.include_router(friends_router, prefix="/friends", tags=["friends"]) 
+api_router.include_router(friends_router, prefix="/friends", tags=["friends"])
+
+# Padel IQ routes
+api_router.include_router(padel_iq_router, prefix="/padel-iq", tags=["padel_iq"]) 

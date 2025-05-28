@@ -1,9 +1,11 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status, Form
 from app.api.v1.schemas.video_schema import VideoUploadRequest, VideoUploadResponse, VideoStatus
-from app.services.video_service import upload_video, get_video_blueprint
+from app.services.video_service import get_video_blueprint
 from app.core.deps import get_current_user
 from app.schemas.user import UserInDB
 from app.services.firebase import get_firebase_client
+from app.worker import analyze_video
+from app.tasks.video import process_video
 from datetime import datetime
 import logging
 import tempfile
@@ -13,101 +15,103 @@ from typing import Optional
 router = APIRouter(prefix="/video", tags=["video"])
 logger = logging.getLogger(__name__)
 
-@router.post("/upload", response_model=VideoUploadResponse)
-async def upload_video_endpoint(
-    file: UploadFile = File(...),
-    video_type: str = Form(...),
-    description: Optional[str] = Form(None),
-    player_position: Optional[str] = Form(None),
+@router.delete("/{video_url:path}")
+async def delete_video(
+    video_url: str,
     current_user: UserInDB = Depends(get_current_user)
 ):
     """
-    Uploads a video to Firebase Storage and initiates analysis.
-    - Validates the video file
-    - Uploads to Firebase Storage
-    - Generates a unique blueprint
-    - Creates a video analysis record
-    - Returns the video details
+    Elimina un video de Firebase Storage.
+    
+    Args:
+        video_url: URL del video a eliminar
+        current_user: Usuario actual
+        
+    Returns:
+        dict: Mensaje de éxito
     """
     try:
-        # Validate file type
-        if not file.content_type or not file.content_type.startswith('video/'):
+        success, error = await StorageService.delete_video(video_url)
+        
+        if not success:
+            raise HTTPException(status_code=400, detail=error)
+            
+        return {"message": "Video eliminado correctamente"}
+        
+    except Exception as e:
+        logger.error(f"Error al eliminar video: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/{video_url:path}/metadata")
+async def get_video_metadata(
+    video_url: str,
+    current_user: UserInDB = Depends(get_current_user)
+):
+    """
+    Obtiene los metadatos de un video.
+    
+    Args:
+        video_url: URL del video
+        current_user: Usuario actual
+        
+    Returns:
+        dict: Metadatos del video
+    """
+    try:
+        metadata, error = await StorageService.get_video_metadata(video_url)
+        
+        if error:
+            raise HTTPException(status_code=400, detail=error)
+            
+        return metadata
+        
+    except Exception as e:
+        logger.error(f"Error al obtener metadatos del video: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/analysis/{video_id}", response_model=VideoUploadResponse)
+async def get_video_analysis(
+    video_id: str,
+    current_user: UserInDB = Depends(get_current_user)
+):
+    """
+    Obtiene el estado y resultados del análisis de un video.
+    """
+    try:
+        db, _ = get_firebase_client()
+        analysis_ref = db.collection('video_analyses').document(video_id)
+        analysis_doc = analysis_ref.get()
+        
+        if not analysis_doc.exists:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="File must be a video"
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Análisis no encontrado"
             )
-
-        # Validate filename
-        if not file.filename:
+            
+        analysis_data = analysis_doc.to_dict()
+        
+        # Verificar que el usuario tenga acceso al análisis
+        if analysis_data['user_id'] != current_user.id:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="File must have a name"
-            )
-
-        # Create temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
-            content = await file.read()
-            temp_file.write(content)
-            temp_path = temp_file.name
-
-        try:
-            # Upload to Firebase Storage
-            db, _ = get_firebase_client()
-            video_path = f"videos/{current_user.id}/{file.filename}"
-            upload_result = upload_video(temp_path, current_user.id, file.filename)
-            
-            # Generate blueprint
-            blueprint = get_video_blueprint(upload_result['url'])
-            
-            # Check if analysis already exists
-            analyses_ref = db.collection('video_analyses')
-            query = analyses_ref.where('blueprint', '==', blueprint).limit(1)
-            results = query.get()
-            
-            if results:
-                # Return existing analysis
-                analysis_doc = results[0]
-                analysis_data = analysis_doc.to_dict()
-                return VideoUploadResponse(
-                    video_id=analysis_doc.id,
-                    url=upload_result['url'],
-                    status=VideoStatus(analysis_data['status']),
-                    created_at=analysis_data['created_at'],
-                    message="Video already analyzed"
-                )
-            
-            # Create analysis document
-            analysis_data = {
-                'video_url': upload_result['url'],
-                'video_path': video_path,
-                'user_id': current_user.id,
-                'video_type': video_type,
-                'description': description,
-                'player_position': player_position,
-                'created_at': datetime.utcnow(),
-                'status': VideoStatus.PENDING,
-                'blueprint': blueprint
-            }
-            analysis_ref = analyses_ref.document()
-            analysis_ref.set(analysis_data)
-            
-            return VideoUploadResponse(
-                video_id=analysis_ref.id,
-                url=upload_result['url'],
-                status=VideoStatus.PENDING,
-                created_at=analysis_data['created_at'],
-                message="Video uploaded successfully"
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permiso para ver este análisis"
             )
             
-        finally:
-            # Clean up temporary file
-            os.unlink(temp_path)
-            
+        return VideoUploadResponse(
+            video_id=video_id,
+            url=analysis_data['video_url'],
+            status=VideoStatus(analysis_data['status']),
+            created_at=analysis_data['created_at'],
+            message="Análisis encontrado",
+            padel_iq=analysis_data.get('padel_iq'),
+            metrics=analysis_data.get('metrics')
+        )
+        
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error uploading video: {str(e)}", exc_info=True)
+        logger.error(f"Error obteniendo análisis: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error processing video: {str(e)}"
+            detail=f"Error obteniendo análisis: {str(e)}"
         ) 

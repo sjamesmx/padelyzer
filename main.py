@@ -1,16 +1,27 @@
 import os
 import logging
-import firebase_admin
-from firebase_admin import credentials, firestore
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1.endpoints import video_routes, auth, users
+from app.api.v1.endpoints import video_routes, auth, users, health
 from routes.profile import router as profile_router
 from routes.padel_iq.dashboard import router as dashboard_router
 from routes.onboarding import router as onboarding_router
 from routes.matchmaking import router as matchmaking_router
-from routes.padel_iq import router as padel_iq_router
-from app.api.v1.dependencies.middleware import error_handling_middleware
+from app.api.v1.endpoints.padel_iq import router as padel_iq_router
+from app.core.middleware import error_handling_middleware
+from app.core.config.firebase import initialize_firebase, get_firebase_clients
+from dotenv import load_dotenv
+from app.api.videos import router as videos_router
+from app.services.pipeline_manager import PipelineManager
+from app.services.firebase import get_firebase_client
+from google.cloud import firestore
+
+# Cargar variables de entorno según el entorno
+env = os.getenv('ENV', 'development')
+if env == 'development':
+    load_dotenv('.env.development')
+else:
+    load_dotenv()
 
 # Configuración de logging
 logging.basicConfig(
@@ -36,22 +47,8 @@ app = FastAPI(
 
 # Inicialización de Firebase
 try:
-    logger.debug("Checking FIREBASE_CREDENTIALS_PATH")
-    cred_path = os.getenv("FIREBASE_CREDENTIALS_PATH")
-    logger.debug(f"FIREBASE_CREDENTIALS_PATH={cred_path}")
-    if not cred_path:
-        logger.error("Variable FIREBASE_CREDENTIALS_PATH no configurada")
-        raise ValueError("Variable FIREBASE_CREDENTIALS_PATH no configurada")
-    if not os.path.exists(cred_path):
-        logger.error(f"El archivo de credenciales no existe: {cred_path}")
-        raise FileNotFoundError(f"El archivo de credenciales no existe: {cred_path}")
-    logger.debug(f"Loading credentials from {cred_path}")
-    with open(cred_path, 'r') as f:
-        logger.debug(f"Reading {cred_path}: {f.read()[:100]}")
-    cred = credentials.Certificate(cred_path)
-    logger.debug("Initializing Firebase app")
-    firebase_admin.initialize_app(cred)
-    db = firestore.client()
+    initialize_firebase()
+    clients = get_firebase_clients()
     logger.info("Firebase inicializado correctamente")
 except Exception as e:
     logger.error(f"Error al inicializar Firebase: {str(e)}", exc_info=True)
@@ -69,15 +66,33 @@ app.add_middleware(
 # Middleware de manejo de errores
 app.middleware("http")(error_handling_middleware)
 
-# Inclusión de routers
-app.include_router(video_routes.router, prefix="/api/v1/video", tags=["video_analysis"])
-app.include_router(profile_router, prefix="/api", tags=["profile"])
-app.include_router(dashboard_router, prefix="/api", tags=["dashboard"])
-app.include_router(onboarding_router, prefix="/api", tags=["onboarding"])
-app.include_router(matchmaking_router, prefix="/api", tags=["matchmaking"])
+# Incluir routers
+app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
-app.include_router(padel_iq_router, prefix="/api/v1/padel-iq", tags=["Padel IQ"])
+app.include_router(video_routes.router, prefix="/api/v1/videos", tags=["videos"])
+app.include_router(profile_router, prefix="/api/v1/profile", tags=["profile"])
+app.include_router(dashboard_router, prefix="/api/v1/dashboard", tags=["dashboard"])
+app.include_router(onboarding_router, prefix="/api/v1/onboarding", tags=["onboarding"])
+app.include_router(matchmaking_router, prefix="/api/v1/matchmaking", tags=["matchmaking"])
+app.include_router(padel_iq_router, prefix="/api/v1/padel-iq", tags=["padel-iq"])
+app.include_router(videos_router)
+
+API_TASKS_KEY = os.getenv("API_TASKS_KEY")  # Opcional: clave para proteger el endpoint
+
+@app.on_event("startup")
+async def startup_event():
+    """Evento que se ejecuta al iniciar la aplicación."""
+    try:
+        # Verificar conexión con Firebase
+        from app.core.config.firebase import verify_firebase_connection
+        if not verify_firebase_connection():
+            logger.error("No se pudo establecer conexión con Firebase")
+            raise Exception("Error de conexión con Firebase")
+        logger.info("Conexión con Firebase verificada correctamente")
+    except Exception as e:
+        logger.error(f"Error en startup: {str(e)}")
+        raise
 
 @app.get("/")
 async def root():
@@ -110,3 +125,53 @@ async def health_check():
 async def test_error():
     logger.debug("Test error endpoint called")
     raise HTTPException(status_code=400, detail="Error de prueba")
+
+@app.post("/tasks/analyze_video")
+async def analyze_video_task(request: Request):
+    data = await request.json()
+    analysis_id = data.get("analysis_id")
+    # Protección opcional por API key
+    api_key = request.headers.get("x-api-key")
+    if API_TASKS_KEY and api_key != API_TASKS_KEY:
+        return {"error": "Unauthorized"}, status.HTTP_401_UNAUTHORIZED
+    if not analysis_id:
+        return {"error": "analysis_id requerido"}, status.HTTP_400_BAD_REQUEST
+    try:
+        db, _ = get_firebase_client()
+        analysis_ref = db.collection('video_analyses').document(analysis_id)
+        analysis_doc = analysis_ref.get()
+        if not analysis_doc.exists:
+            return {"error": "No se encontró el documento de análisis"}, status.HTTP_404_NOT_FOUND
+        analysis_data = analysis_doc.to_dict()
+        video_url = analysis_data.get('video_url')
+        video_type = analysis_data.get('video_type', 'game')
+        nivel = analysis_data.get('nivel', 'intermedio')
+        user_id = analysis_data.get('user_id')
+        pipeline = PipelineManager()
+        resultado = pipeline.analyze(
+            video_path=video_url,
+            tipo=video_type,
+            nivel=nivel,
+            user_id=user_id
+        )
+        analysis_ref.update({
+            'status': 'completed' if 'error' not in resultado else 'failed',
+            'metrics': resultado.get('metrics'),
+            'raw_analysis': resultado.get('raw_analysis'),
+            'output_video': resultado.get('output_video'),
+            'completed_at': firestore.SERVER_TIMESTAMP,
+            'error_details': resultado.get('error')
+        })
+        return {"status": "ok"}
+    except Exception as e:
+        if 'analysis_ref' in locals():
+            analysis_ref.update({
+                'status': 'failed',
+                'error_details': f"Error general: {str(e)}",
+                'failed_at': firestore.SERVER_TIMESTAMP
+            })
+        return {"error": str(e)}, status.HTTP_500_INTERNAL_SERVER_ERROR
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

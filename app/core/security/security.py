@@ -34,4 +34,15 @@ def verify_token(token: str) -> Optional[dict]:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         return payload
     except JWTError:
-        return None 
+        return None
+
+def decode_token(token: str) -> dict:
+    """
+    Decodifica un token JWT y retorna su payload.
+    Lanza una excepción si el token es inválido.
+    """
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        return payload
+    except JWTError as e:
+        raise ValueError(f"Token inválido: {str(e)}") 

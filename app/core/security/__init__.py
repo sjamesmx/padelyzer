@@ -7,7 +7,8 @@ from app.core.security.security import (
     create_refresh_token,
     verify_password,
     get_password_hash,
-    verify_token
+    verify_token,
+    decode_token
 )
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "create_refresh_token",
     "verify_password",
     "get_password_hash",
-    "verify_token"
+    "verify_token",
+    "decode_token"
 ]
