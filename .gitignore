@@ -131,4 +131,6 @@ dev-debug.log
 # OS specific
 # Task files
 tasks.json
-tasks/ 
+tasks/ *.pt
+*.mp4
+*.bak*
